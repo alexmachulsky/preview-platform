@@ -25,7 +25,7 @@ existing, and Argo CD reconciles the cluster to match.
 | CI | GitHub Actions → GHCR |
 | IaC | Terraform (`helm`/`kubernetes` providers) |
 | Cluster | k3d locally, EKS-ready |
-| Ingress | ingress-nginx + wildcard `*.127.0.0.1.sslip.io` |
+| Ingress | ingress-nginx + wildcard `*.localtest.me` |
 | Workload | FastAPI api + Python worker + Postgres |
 | Observability | Prometheus + Grafana + Loki |
 
@@ -39,8 +39,19 @@ make urls        # where everything lives
 
 Then open a pull request against this repo and watch `make previews`.
 
-> The k3d load balancer binds host ports **8080/8443** because Apache owns `:80` on
-> the development machine. Override with `make up HTTP_PORT=80 HTTPS_PORT=443`.
+### Two local-environment notes
+
+**Ports.** The k3d load balancer binds host **8080/8443**, because Apache already owns
+`:80` on this machine. Override with `make up HTTP_PORT=80 HTTPS_PORT=443` if yours is free.
+
+**Wildcard DNS.** Preview hostnames need a domain that resolves any label to `127.0.0.1`.
+The usual picks, `sslip.io` and `nip.io`, are **hijacked to `208.91.112.55` by the resolver
+on this network**, so the platform uses `localtest.me` instead. Before changing
+`BASE_DOMAIN`, confirm the replacement actually works:
+
+```bash
+getent ahostsv4 pr-1.$BASE_DOMAIN   # must print 127.0.0.1
+```
 
 Run `make help` for the full target list. Architecture and troubleshooting live in
 [`docs/`](docs/).

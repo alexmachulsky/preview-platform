@@ -12,9 +12,13 @@ AGENTS      ?= 2
 HTTP_PORT   ?= 8080
 HTTPS_PORT  ?= 8443
 
-# sslip.io resolves <anything>.127.0.0.1.sslip.io to 127.0.0.1, so wildcard
-# preview hostnames work with zero DNS configuration.
-BASE_DOMAIN ?= 127.0.0.1.sslip.io
+# Wildcard DNS for preview hostnames, with zero local configuration.
+# *.localtest.me resolves to 127.0.0.1 (and ::1) for any label.
+#
+# NOTE: sslip.io and nip.io — the usual choices — are unusable on this network.
+# The resolver at 192.168.13.192 hijacks both to 208.91.112.55. Verify before
+# switching: `getent ahostsv4 pr-1.$(BASE_DOMAIN)` must return 127.0.0.1.
+BASE_DOMAIN ?= localtest.me
 
 CONTEXT     := k3d-$(CLUSTER)
 TF_DIR      := infra/local
