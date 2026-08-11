@@ -12,5 +12,11 @@ description: |
   fails with "no matches for kind AppProject". Terraform orders this release
   after argo-cd, by which point the CRDs are registered.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+# Bump this on every change to the templates or values.
+#
+# helm_release points at this chart by local path, and the provider does not
+# diff on the chart's file contents — editing a template and re-running
+# `terraform apply` reports "0 changed" and silently leaves the old
+# ApplicationSet running. The version is the signal that something moved.
+version: 0.2.0
+appVersion: "0.2.0"
