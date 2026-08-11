@@ -1,0 +1,27 @@
+{{- if .Values.resourceQuota.enabled }}
+{{- /*
+Every preview shares one laptop cluster with every other open PR. The quota is
+the blast radius: a runaway pod in preview-pr-42 gets rejected instead of
+evicting preview-pr-41.
+
+Sum of requests across api + worker + postgres + one hook Job is ~450m / 550Mi,
+so 2 CPU / 2Gi leaves room to scale a component up while still failing fast on
+anything pathological.
+*/ -}}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: guardrail
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-15")) | nindent 4 }}
+spec:
+  hard:
+    {{- range $key, $value := .Values.resourceQuota.hard }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+{{- end }}

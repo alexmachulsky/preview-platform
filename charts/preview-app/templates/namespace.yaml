@@ -1,0 +1,21 @@
+{{- /*
+Argo CD creates preview-pr-<N> through CreateNamespace=true, but a namespace
+created that way carries no labels — and `make previews` finds live previews
+with `kubectl get ns -l app.kubernetes.io/part-of=preview-platform`. Shipping
+the Namespace with the release is what puts the label on it, and it also means
+deleting the Application deletes the namespace.
+
+Skipped for shared namespaces so an accidental `helm install -n default` can
+never make Helm the owner of `default`.
+*/ -}}
+{{- if and .Values.namespace.create (not (has .Release.Namespace .Values.namespace.protected)) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-20")) | nindent 4 }}
+{{- end }}

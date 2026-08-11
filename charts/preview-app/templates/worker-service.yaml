@@ -1,0 +1,28 @@
+{{- if .Values.worker.enabled }}
+{{- /*
+The worker serves no traffic, but a ServiceMonitor scrapes Endpoints, and
+Endpoints come from a Service. Headless (clusterIP: None) keeps it out of
+kube-proxy while still publishing the pod addresses Prometheus needs.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "preview-app.worker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "0")) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: {{ .Values.worker.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "preview-app.worker.selectorLabels" . | nindent 4 }}
+{{- end }}

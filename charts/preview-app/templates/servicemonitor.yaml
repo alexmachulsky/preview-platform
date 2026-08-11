@@ -1,0 +1,75 @@
+{{- /*
+Rendered only when the Prometheus Operator CRDs are actually installed. Argo CD
+passes the cluster's API versions to `helm template`, so this gate works on the
+GitOps path too; `helm template --api-versions monitoring.coreos.com/v1` forces
+it on locally.
+
+The `release: kube-prometheus-stack` label is not decoration — that stack's
+Prometheus selects ServiceMonitors by it, and without the label these are
+ignored.
+*/ -}}
+{{- if and .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "preview-app.api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+    {{- toYaml .Values.metrics.serviceMonitor.labels | nindent 4 }}
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "0")) | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "preview-app.api.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.metrics.serviceMonitor.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      # Every series carries the PR it came from, so one Grafana dashboard can
+      # break down by preview.
+      relabelings:
+        - targetLabel: pr_number
+          replacement: {{ .Values.env.prNumber | quote }}
+        - targetLabel: preview_namespace
+          replacement: {{ .Release.Namespace | quote }}
+{{- if .Values.worker.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "preview-app.worker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+    {{- toYaml .Values.metrics.serviceMonitor.labels | nindent 4 }}
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "0")) | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "preview-app.worker.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.metrics.serviceMonitor.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - targetLabel: pr_number
+          replacement: {{ .Values.env.prNumber | quote }}
+        - targetLabel: preview_namespace
+          replacement: {{ .Release.Namespace | quote }}
+{{- end }}
+{{- end }}

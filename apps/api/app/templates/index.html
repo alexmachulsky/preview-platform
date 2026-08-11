@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en" data-pr="{{ settings.pr_number }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR #{{ settings.pr_number }} · Preview Platform</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A//www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='hsl({{ hue }},85%25,55%25)'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --hue: {{ hue }};
+    --accent: hsl(var(--hue) 85% 62%);
+    --accent-soft: hsl(var(--hue) 85% 62% / 0.14);
+    --accent-line: hsl(var(--hue) 85% 62% / 0.35);
+    --bg: hsl(var(--hue) 28% 8%);
+    --bg-2: hsl(var(--hue) 32% 12%);
+    --card: hsl(var(--hue) 22% 13% / 0.72);
+    --border: hsl(var(--hue) 20% 100% / 0.10);
+    --text: hsl(var(--hue) 25% 96%);
+    --muted: hsl(var(--hue) 14% 72%);
+    --ok: hsl(152 62% 55%);
+    --warn: hsl(38 92% 62%);
+    --bad: hsl(2 78% 64%);
+    --radius: 16px;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+            "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+            "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* The body gradient is fixed-attachment, so the root needs its own base
+     colour — otherwise anything below the fold shows through as white. */
+  html {
+    -webkit-text-size-adjust: 100%;
+    background: var(--bg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font);
+    color: var(--text);
+    background:
+      radial-gradient(1200px 620px at 12% -8%, hsl(var(--hue) 88% 46% / 0.30), transparent 62%),
+      radial-gradient(900px 520px at 92% 4%, hsl(calc(var(--hue) + 42) 82% 52% / 0.22), transparent 60%),
+      linear-gradient(168deg, var(--bg-2), var(--bg) 58%);
+    background-attachment: fixed;
+    line-height: 1.55;
+    padding: clamp(24px, 5vw, 64px) clamp(16px, 5vw, 32px) 64px;
+  }
+
+  .wrap { max-width: 1040px; margin: 0 auto; }
+
+  header { margin-bottom: clamp(28px, 4vw, 44px); }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--accent-soft);
+  }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 0 4px hsl(152 62% 55% / 0.18);
+  }
+  .dot.bad { background: var(--bad); box-shadow: 0 0 0 4px hsl(2 78% 64% / 0.18); }
+
+  h1 {
+    margin: 20px 0 8px;
+    font-size: clamp(44px, 9vw, 84px);
+    line-height: 0.95;
+    letter-spacing: -0.035em;
+    font-weight: 800;
+    background: linear-gradient(96deg, var(--text) 18%, var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .tagline { margin: 0 0 22px; color: var(--muted); font-size: clamp(15px, 2vw, 18px); max-width: 62ch; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  .chip {
+    display: inline-flex; align-items: baseline; gap: 8px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    font-size: 13px;
+  }
+  .chip b { font-family: var(--mono); font-weight: 600; letter-spacing: -0.01em; }
+  .chip span { color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; font-weight: 700; }
+
+  .grid {
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    margin-bottom: 16px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px;
+    backdrop-filter: blur(10px);
+  }
+
+  .stat .label {
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 700;
+  }
+  .stat .value {
+    font-size: 46px; font-weight: 800; letter-spacing: -0.04em;
+    line-height: 1.1; margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .value.pending { color: var(--warn); }
+  .stat .value.done { color: var(--ok); }
+  .stat .value.failed { color: var(--bad); }
+
+  .panels { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+  h2 {
+    margin: 0 0 14px;
+    font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); font-weight: 700;
+  }
+
+  ul.list { list-style: none; margin: 0; padding: 0; }
+
+  ul.list li {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 0;
+    border-top: 1px solid var(--border);
+    font-size: 14px;
+  }
+  ul.list li:first-child { border-top: 0; }
+
+  .swatch { width: 12px; height: 12px; border-radius: 4px; flex: 0 0 auto; border: 1px solid var(--border); }
+
+  .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 999px; flex: 0 0 auto;
+  }
+  .badge.pending { background: hsl(38 92% 62% / 0.16); color: var(--warn); }
+  .badge.done { background: hsl(152 62% 55% / 0.16); color: var(--ok); }
+  .badge.failed { background: hsl(2 78% 64% / 0.16); color: var(--bad); }
+
+  .empty { color: var(--muted); font-size: 14px; padding: 10px 0; }
+
+  .notice {
+    border: 1px solid hsl(2 78% 64% / 0.4);
+    background: hsl(2 78% 64% / 0.12);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+
+  footer {
+    margin-top: 28px; padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center;
+    font-size: 13px; color: var(--muted);
+  }
+  footer a {
+    color: var(--text); text-decoration: none;
+    border-bottom: 1px solid var(--accent-line);
+    padding-bottom: 1px;
+  }
+  footer a:hover { border-bottom-color: var(--accent); }
+  footer .spacer { flex: 1 1 auto; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .card { transition: border-color 160ms ease, transform 160ms ease; }
+    .card:hover { border-color: var(--accent-line); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">
+      <span class="dot {{ '' if db_online else 'bad' }}"></span>
+      Preview environment
+    </div>
+    <h1>PR #{{ settings.pr_number }}</h1>
+    <p class="tagline">
+      An ephemeral, fully isolated copy of the stack — api, worker and Postgres — created
+      because this pull request exists, and deleted when it stops existing.
+    </p>
+    <div class="chips">
+      <span class="chip"><span>commit</span><b>{{ short_sha }}</b></span>
+      <span class="chip"><span>env</span><b>{{ settings.app_env }}</b></span>
+      <span class="chip"><span>service</span><b>api</b></span>
+      <span class="chip"><span>database</span><b>{{ 'connected' if db_online else 'unreachable' }}</b></span>
+    </div>
+  </header>
+
+  {% if not db_online %}
+  <div class="notice">
+    The database is not answering right now, so the counters below are empty. The pod stays
+    live but reports <code>not ready</code> on <code>/readyz</code> until Postgres comes back.
+  </div>
+  {% endif %}
+
+  <section class="grid">
+    <div class="card stat">
+      <div class="label">Widgets</div>
+      <div class="value">{{ widget_count }}</div>
+    </div>
+    <div class="card stat">
+      <div class="label">Jobs pending</div>
+      <div class="value pending">{{ counts.pending }}</div>
+    </div>
+    <div class="card stat">
+      <div class="label">Jobs done</div>
+      <div class="value done">{{ counts.done }}</div>
+    </div>
+    <div class="card stat">
+      <div class="label">Jobs failed</div>
+      <div class="value failed">{{ counts.failed }}</div>
+    </div>
+  </section>
+
+  <section class="panels">
+    <div class="card">
+      <h2>Newest widgets</h2>
+      {% if widgets %}
+      <ul class="list">
+        {% for widget in widgets %}
+        <li>
+          <span class="swatch" style="background: {{ widget.color }}"></span>
+          <span class="name">{{ widget.name }}</span>
+          <span class="id">#{{ widget.id }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">No widgets yet — <code>POST /api/widgets</code> to create one.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Newest jobs · {{ job_total }} total</h2>
+      {% if jobs %}
+      <ul class="list">
+        {% for job in jobs %}
+        <li>
+          <span class="id">#{{ job.id }}</span>
+          <span class="name">{{ job.payload }}</span>
+          <span class="badge {{ job.status }}">{{ job.status }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty">Queue is empty — <code>POST /api/jobs</code> and watch the worker drain it.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <footer>
+    <a href="/docs">API docs</a>
+    <a href="/api/widgets">widgets</a>
+    <a href="/api/jobs">jobs</a>
+    <a href="/version">version</a>
+    <a href="/healthz">healthz</a>
+    <a href="/readyz">readyz</a>
+    <a href="/metrics">metrics</a>
+    <span class="spacer"></span>
+    <span>hue {{ hue }}° derived from PR #{{ settings.pr_number }}</span>
+  </footer>
+</div>
+</body>
+</html>

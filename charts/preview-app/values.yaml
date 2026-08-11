@@ -1,0 +1,402 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# preview-app — one ephemeral environment per pull request.
+#
+# Argo CD's ApplicationSet renders this chart once per open PR and overrides
+# exactly four values:
+#
+#   image.tag      sha-<head_short_sha>
+#   ingress.host   pr-<number>.localtest.me
+#   env.prNumber   <number>
+#   env.gitSha     <head_sha>
+#
+# Every other value below has a default that lets `helm install` work unaided.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# -- Override the chart name used in `app.kubernetes.io/name`.
+nameOverride: ""
+# -- Override the generated resource-name prefix (default: <release>-<chart>).
+fullnameOverride: ""
+
+# -- Value of `app.kubernetes.io/part-of` on every object the chart creates.
+# `make previews` finds live preview namespaces by this label — do not change it
+# without changing the Makefile.
+partOf: preview-platform
+
+# -- Extra labels merged into every object.
+commonLabels: {}
+# -- Extra annotations merged into every object.
+commonAnnotations: {}
+
+# ── Images ───────────────────────────────────────────────────────────────────
+# Both services ship from one repository prefix; the component name is appended,
+# so the api runs ghcr.io/alexmachulsky/preview-platform/api:<tag>.
+image:
+  registry: ghcr.io
+  repository: alexmachulsky/preview-platform
+  # -- Shared tag for api + worker. CD sets `sha-<short-sha>`; empty falls back
+  # to .Chart.AppVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+  # -- Pull secrets, required only while the GHCR packages are private.
+  pullSecrets: []
+
+# ── Application environment ──────────────────────────────────────────────────
+# These land as env vars in api, worker, and both hook Jobs. DATABASE_URL is not
+# here: it is assembled by the chart and injected from a Secret (see `database`).
+env:
+  # -- Pull-request number. CD passes `{{number}}`; 0 means "not a PR".
+  prNumber: "0"
+  # -- Full commit SHA the images were built from. CD passes `{{head_sha}}`.
+  gitSha: unknown
+  # -- APP_ENV for the api.
+  appEnv: preview
+  # -- LOG_LEVEL for api and worker.
+  logLevel: INFO
+
+# -- Extra env vars appended to every workload, e.g.
+# extraEnv:
+#   - name: FEATURE_X
+#     value: "true"
+extraEnv: []
+
+# ── Pod hardening ────────────────────────────────────────────────────────────
+# Both images run as UID 10001 with a read-only root filesystem; every workload
+# gets an emptyDir on /tmp so libraries that need scratch space still work.
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+# ── api ──────────────────────────────────────────────────────────────────────
+api:
+  replicaCount: 1
+  # -- Keep two ReplicaSets around: enough to roll back, not enough to clutter.
+  revisionHistoryLimit: 2
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+  image:
+    # -- Override the full repository (defaults to <image.repository>/api).
+    repository: ""
+    # -- Override the shared image.tag for the api only.
+    tag: ""
+
+  # -- Container port. The api listens on :8000 (fixed by the app contract).
+  containerPort: 8000
+
+  service:
+    type: ClusterIP
+    # -- Service port; also the port the Ingress and the ServiceMonitor target.
+    port: 8000
+    annotations: {}
+
+  # Liveness never touches the database (a dead DB must not restart the api);
+  # readiness does, so traffic waits for migrations. The startupProbe gives a
+  # cold image up to 60s before the liveness probe can start killing it.
+  probes:
+    startup:
+      path: /healthz
+      periodSeconds: 2
+      failureThreshold: 30
+      timeoutSeconds: 3
+    liveness:
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      failureThreshold: 3
+      timeoutSeconds: 3
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── worker ───────────────────────────────────────────────────────────────────
+# No inbound traffic. It exposes :9000 for /healthz and /metrics only, so its
+# Service is headless and exists purely so a ServiceMonitor has endpoints.
+worker:
+  enabled: true
+  replicaCount: 1
+  revisionHistoryLimit: 2
+
+  image:
+    repository: ""
+    tag: ""
+
+  # -- Metrics/health port, named `metrics` on both the pod and the Service.
+  metricsPort: 9000
+  # -- POLL_INTERVAL_SECONDS for the worker loop.
+  pollIntervalSeconds: 10
+
+  probes:
+    startup:
+      path: /healthz
+      periodSeconds: 2
+      failureThreshold: 30
+      timeoutSeconds: 3
+    liveness:
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+    readiness:
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 3
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 384Mi
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ── Ingress ──────────────────────────────────────────────────────────────────
+# localtest.me resolves *.localtest.me to 127.0.0.1 at any depth with zero DNS
+# setup — this machine's resolver hijacks sslip.io and nip.io, so do not use
+# those here.
+ingress:
+  enabled: true
+  className: nginx
+  # -- Preview hostname. CD passes `pr-<number>.localtest.me`.
+  host: preview.localtest.me
+  path: /
+  pathType: Prefix
+  annotations: {}
+  # -- Host port the k3d load balancer is published on. Printed by NOTES.txt
+  # only; Apache owns :80 on the dev machine, hence 8080.
+  externalPort: 8080
+  tls:
+    enabled: false
+    secretName: ""
+
+# ── Database ─────────────────────────────────────────────────────────────────
+# The chart assembles DATABASE_URL (psycopg3 driver form) and stores it in a
+# Secret named `<release>-db`, which is also the Secret the postgresql subchart
+# reads its own credentials from. Nothing consumes the password directly: api,
+# worker and both Jobs read DATABASE_URL through a secretKeyRef.
+database:
+  # -- Key inside the Secret that holds the assembled DSN.
+  urlKey: DATABASE_URL
+  # -- Length of the generated password. It is generated once and then reused on
+  # every `helm upgrade` via a `lookup` of the live Secret, so upgrading never
+  # rotates the password out from under a running Postgres data directory.
+  passwordLength: 24
+
+# Bitnami PostgreSQL subchart. Persistence is OFF: a preview is thrown away with
+# its PR and leftover PVCs are exactly the garbage this platform exists to kill.
+postgresql:
+  enabled: true
+
+  auth:
+    username: preview
+    database: preview
+    # -- Leave empty to generate + preserve. Set a value to pin the password —
+    # recommended when Argo CD renders the chart, because Argo CD templates
+    # without cluster access and `lookup` therefore returns nothing there.
+    password: ""
+    # -- MUST resolve to the same name as the chart's own Secret. The subchart
+    # runs this through `tpl`, and `.Release.Name` means the same thing in both
+    # contexts.
+    existingSecret: "{{ .Release.Name }}-db"
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+
+  # Keep the whole subchart in Argo CD's earliest sync wave so the database is
+  # healthy before the migration hook runs.
+  commonAnnotations:
+    argocd.argoproj.io/sync-wave: "-5"
+
+  # Subchart objects are not labelled by this chart's helpers, so `make
+  # previews` would miss them. Keep in sync with `partOf` above — Helm values
+  # cannot reference other values.
+  commonLabels:
+    app.kubernetes.io/part-of: preview-platform
+
+  primary:
+    persistence:
+      enabled: false
+    # A single-replica database that is thrown away with its pull request has no
+    # availability to protect.
+    pdb:
+      create: false
+    # `resources` wins over Bitnami's `resourcesPreset`.
+    resourcesPreset: none
+    resources:
+      requests:
+        cpu: 100m
+        memory: 192Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+
+  # The postgres_exporter sidecar would cost another pod's worth of memory per
+  # preview; the api already exports application-level metrics.
+  metrics:
+    enabled: false
+
+# Used only when `postgresql.enabled=false` (shared/managed database). Set
+# `url`, or the host/username/password fields, or `existingSecret` — with none
+# of them the chart still renders, but it renders a DSN with an empty password
+# pointed at <release>-postgresql, which is a database nobody is managing.
+externalDatabase:
+  # -- Complete DSN. Wins over the host/port/user/password fields below.
+  url: ""
+  # -- Defaults to <release>-postgresql when empty.
+  host: ""
+  port: 5432
+  username: preview
+  password: ""
+  database: preview
+  # -- Read the DSN from a pre-existing Secret instead. When set, the chart
+  # creates no Secret of its own.
+  existingSecret: ""
+  existingSecretKey: DATABASE_URL
+
+# ── Schema migrations (Helm pre-install/pre-upgrade hook) ────────────────────
+migrate:
+  enabled: true
+  # -- `alembic upgrade head`, run from the api image with workdir /app.
+  command:
+    - alembic
+    - upgrade
+    - head
+  workingDir: /app
+  backoffLimit: 3
+  # -- Delete finished Jobs after this many seconds (null keeps them forever).
+  ttlSecondsAfterFinished: 600
+  # -- Helm hook phases. The default matches the platform contract. On a bare
+  # `helm install` with the bundled Postgres, Helm runs pre-install hooks before
+  # it creates the database, so use `{post-install,pre-upgrade}` for that path.
+  helmHooks:
+    - pre-install
+    - pre-upgrade
+  # Under Argo CD the Helm hook would become a PreSync hook, which runs before
+  # the database exists on the very first sync and deadlocks. Declaring an Argo
+  # CD hook takes precedence over the Helm one and moves the Job into the sync
+  # phase, after Postgres (wave -5) and before the app pods (wave 3). Set to ""
+  # to let Argo CD derive the phase from the Helm hooks instead.
+  argocdHook: Sync
+  argocdSyncWave: "1"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── Demo data (Helm post-install hook, runs after migrate) ───────────────────
+seed:
+  enabled: true
+  # -- `python -m app.seed`, idempotent by contract.
+  command:
+    - python
+    - -m
+    - app.seed
+  workingDir: /app
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  helmHooks:
+    - post-install
+  argocdHook: Sync
+  argocdSyncWave: "2"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Both Jobs block on a TCP connect to the database first, so a slow Postgres
+# start costs a retry loop instead of a failed sync.
+waitForDatabase:
+  enabled: true
+  timeoutSeconds: 180
+
+# ── Monitoring ───────────────────────────────────────────────────────────────
+metrics:
+  serviceMonitor:
+    enabled: true
+    # -- kube-prometheus-stack's Prometheus only selects ServiceMonitors
+    # carrying its release label.
+    labels:
+      release: kube-prometheus-stack
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+
+# ── Namespace ────────────────────────────────────────────────────────────────
+# Argo CD creates `preview-pr-<N>` via CreateNamespace=true, but that namespace
+# has no labels, and `make previews` lists previews by label. Shipping the
+# Namespace in the chart is what puts the label there.
+namespace:
+  # -- Owning the Namespace is also what makes `prune: true` delete it when the
+  # pull request closes. Keep it on for the Argo CD path.
+  #
+  # For plain Helm into a namespace that does not exist yet, use
+  #   helm install ... -n preview-pr-7 --create-namespace --set namespace.create=false
+  # because Helm creates hook objects before it creates chart objects, and
+  # because Helm refuses to adopt a namespace it did not create.
+  create: true
+  # -- Never manage these namespaces even when create=true.
+  protected:
+    - default
+    - kube-system
+    - kube-public
+    - kube-node-lease
+
+# ── Namespace guard rails ────────────────────────────────────────────────────
+# Several previews share one laptop cluster: the quota is what stops one PR from
+# eating the node. Requests total 2 CPU / 2Gi; the limit ceiling is higher on
+# purpose, because every container's limit is 3-4x its request and bursts must
+# still fit.
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    pods: "10"
+
+# Defaults for anything that forgets to ask (a bare `kubectl run` debug pod, a
+# subchart container) — without these the ResourceQuota above would reject it.
+limitRange:
+  enabled: true
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      max:
+        cpu: "1"
+        memory: 1Gi
+      min:
+        cpu: 10m
+        memory: 16Mi

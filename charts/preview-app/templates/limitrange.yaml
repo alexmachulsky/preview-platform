@@ -1,0 +1,23 @@
+{{- if .Values.limitRange.enabled }}
+{{- /*
+The ResourceQuota above constrains limits.cpu/limits.memory, which means the
+API server rejects any pod that does not declare them. Everything this chart
+creates does — but a `kubectl run` debug pod or a future subchart container
+would not, so the LimitRange supplies defaults and keeps that failure mode from
+ever surfacing.
+*/ -}}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "preview-app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: guardrail
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-15")) | nindent 4 }}
+spec:
+  limits:
+    {{- toYaml .Values.limitRange.limits | nindent 4 }}
+{{- end }}

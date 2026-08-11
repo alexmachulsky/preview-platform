@@ -1,0 +1,68 @@
+{{- if .Values.seed.enabled }}
+{{- /*
+`python -m app.seed` — idempotent demo data, so a preview is never an empty
+page. post-install only: an upgrade must not re-seed a database somebody has
+been clicking around in. Weight 1 keeps it behind the migration in Helm; sync
+wave 2 does the same in Argo CD.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "preview-app.fullname" . }}-seed
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seed
+  annotations:
+    {{- $extra := dict
+        "helm.sh/hook" (join "," .Values.seed.helmHooks)
+        "helm.sh/hook-weight" "1"
+        "helm.sh/hook-delete-policy" "before-hook-creation" }}
+    {{- if .Values.seed.argocdHook }}
+    {{- $_ := set $extra "argocd.argoproj.io/hook" .Values.seed.argocdHook }}
+    {{- $_ := set $extra "argocd.argoproj.io/hook-delete-policy" "BeforeHookCreation" }}
+    {{- $_ := set $extra "argocd.argoproj.io/sync-wave" (toString .Values.seed.argocdSyncWave) }}
+    {{- end }}
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" $extra) | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.seed.backoffLimit }}
+  {{- with .Values.seed.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "preview-app.labels" . | nindent 8 }}
+        app.kubernetes.io/component: seed
+    spec:
+      restartPolicy: Never
+      {{- if .Values.image.pullSecrets }}
+      {{- include "preview-app.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "preview-app.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.waitForDatabase.enabled }}
+      initContainers:
+        {{- include "preview-app.waitForDatabase" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seed
+          image: {{ include "preview-app.api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "preview-app.containerSecurityContext" . | nindent 12 }}
+          workingDir: {{ .Values.seed.workingDir }}
+          command:
+            {{- toYaml .Values.seed.command | nindent 12 }}
+          env:
+            {{- include "preview-app.commonEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.seed.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

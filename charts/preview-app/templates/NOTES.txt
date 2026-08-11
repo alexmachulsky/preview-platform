@@ -1,0 +1,29 @@
+{{ .Chart.Name }} {{ .Chart.Version }} — preview for PR #{{ .Values.env.prNumber }}
+
+{{- if .Values.ingress.enabled }}
+
+  URL   http://{{ .Values.ingress.host }}{{ if .Values.ingress.externalPort }}:{{ .Values.ingress.externalPort }}{{ end }}/
+
+  (:{{ .Values.ingress.externalPort }} is where the k3d load balancer publishes ingress-nginx —
+   Apache owns :80 on this machine. *.localtest.me always resolves to
+   127.0.0.1, so no DNS setup is needed.)
+{{- else }}
+
+  Ingress is disabled. Reach the api with:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "preview-app.api.fullname" . }} 8000:{{ .Values.api.service.port }}
+{{- end }}
+
+  namespace  {{ .Release.Namespace }}
+  image      {{ include "preview-app.api.image" . }}
+  git sha    {{ .Values.env.gitSha }}
+  database   {{ if .Values.postgresql.enabled }}{{ include "preview-app.postgresql.fullname" . }}:{{ include "preview-app.postgresql.port" . }} (in-cluster, {{ if .Values.postgresql.primary.persistence.enabled }}persistent{{ else }}emptyDir — wiped with the pod{{ end }}){{ else }}external{{ end }}
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} get pods -w
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "preview-app.fullname" . }}-migrate
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=api -f
+
+Every object is labelled app.kubernetes.io/part-of={{ .Values.partOf }}, so:
+
+  make previews

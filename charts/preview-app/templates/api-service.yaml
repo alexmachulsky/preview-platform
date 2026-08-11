@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "preview-app.api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (merge (dict
+        "argocd.argoproj.io/sync-wave" "0") (.Values.api.service.annotations | default dict))) | nindent 4 }}
+spec:
+  type: {{ .Values.api.service.type }}
+  ports:
+    # One port serves traffic, /metrics, and the probes — the ServiceMonitor
+    # below scrapes this same named port.
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "preview-app.api.selectorLabels" . | nindent 4 }}

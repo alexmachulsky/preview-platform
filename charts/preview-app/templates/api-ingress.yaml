@@ -1,0 +1,38 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+One host per pull request. ingress-nginx is installed cluster-wide by Terraform
+and its k3d load balancer is published on localhost:8080, so
+http://pr-42.localtest.me:8080/ reaches this Service. localtest.me resolves any
+*.localtest.me name to 127.0.0.1 without touching DNS.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "preview-app.api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (merge (dict
+        "argocd.argoproj.io/sync-wave" "0") (.Values.ingress.annotations | default dict))) | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" (include "preview-app.api.fullname" .)) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "preview-app.api.fullname" . }}
+                port:
+                  name: http
+{{- end }}

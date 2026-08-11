@@ -1,0 +1,39 @@
+# Copy to terraform.tfvars and edit. Every value here already has a default
+# that works on the k3d cluster created by `make up`, so an empty file is fine.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+
+# Wildcard base domain. localtest.me resolves *.localtest.me to 127.0.0.1
+# publicly, so no /etc/hosts entry is needed.
+#
+# Do not replace this with sslip.io or nip.io: the resolver on this network
+# hijacks both and answers a public IP for them. See variables.tf.
+# base_domain = "localtest.me"
+
+# Host port k3d publishes for the cluster's :80. Apache owns :80 here, so
+# `make up` uses 8080. Set to 80 if the port is free on your machine.
+# http_port = 8080
+
+# kubectl context created by `make up`.
+# kube_context    = "k3d-preview-platform"
+# kubeconfig_path = "~/.kube/config"
+
+# Repository Argo CD deploys previews from.
+# git_repo_url = "https://github.com/alexmachulsky/preview-platform"
+
+# Only needed for a private repository. Prefer the environment variable so the
+# token never lands in a file:
+#
+#   export TF_VAR_github_token=ghp_xxx
+#
+# github_token    = ""
+# github_username = "git"
+
+# Grafana. Anonymous visitors already get Viewer access; this is for editing.
+# grafana_admin_password = "admin"
+
+# Keep Prometheus small — this host also runs the preview environments.
+# prometheus_retention = "6h"
+
+# Set to false to skip Loki + promtail entirely.
+# enable_loki = true

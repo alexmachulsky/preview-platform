@@ -1,0 +1,71 @@
+{{- if .Values.migrate.enabled }}
+{{- /*
+`alembic upgrade head`, run from the api image before the new code is exposed.
+
+Helm:    pre-install,pre-upgrade at weight 0 (the Secret is weight -10).
+Argo CD: an explicit Sync hook, because Argo CD would otherwise map the Helm
+         hook to PreSync — which on a first sync runs before the database
+         exists and deadlocks the Application. As a Sync hook in wave 1 it runs
+         after Postgres (wave -5) and before api/worker (wave 3).
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "preview-app.fullname" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    {{- $extra := dict
+        "helm.sh/hook" (join "," .Values.migrate.helmHooks)
+        "helm.sh/hook-weight" "0"
+        "helm.sh/hook-delete-policy" "before-hook-creation" }}
+    {{- if .Values.migrate.argocdHook }}
+    {{- $_ := set $extra "argocd.argoproj.io/hook" .Values.migrate.argocdHook }}
+    {{- $_ := set $extra "argocd.argoproj.io/hook-delete-policy" "BeforeHookCreation" }}
+    {{- $_ := set $extra "argocd.argoproj.io/sync-wave" (toString .Values.migrate.argocdSyncWave) }}
+    {{- end }}
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" $extra) | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  {{- with .Values.migrate.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "preview-app.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- if .Values.image.pullSecrets }}
+      {{- include "preview-app.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "preview-app.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.waitForDatabase.enabled }}
+      initContainers:
+        {{- include "preview-app.waitForDatabase" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "preview-app.api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "preview-app.containerSecurityContext" . | nindent 12 }}
+          workingDir: {{ .Values.migrate.workingDir }}
+          command:
+            {{- toYaml .Values.migrate.command | nindent 12 }}
+          env:
+            {{- include "preview-app.commonEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrate.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

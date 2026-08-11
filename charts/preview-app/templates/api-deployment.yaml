@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preview-app.api.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "3")) | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  revisionHistoryLimit: {{ .Values.api.revisionHistoryLimit }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.api.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.api.rollingUpdate.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "preview-app.api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "preview-app.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.image.pullSecrets }}
+      {{- include "preview-app.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "preview-app.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "preview-app.api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "preview-app.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.containerPort }}
+              protocol: TCP
+          env:
+            {{- include "preview-app.commonEnv" . | nindent 12 }}
+          # /healthz never touches the database: a database outage must not turn
+          # into a restart loop. /readyz does, so the pod leaves the Service
+          # endpoints instead.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.api.probes.startup.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
+            timeoutSeconds: {{ .Values.api.probes.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.api.probes.readiness.timeoutSeconds }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            # readOnlyRootFilesystem: true — everything that writes needs a home.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

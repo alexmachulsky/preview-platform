@@ -1,0 +1,121 @@
+# Local development stack — the same three containers a preview namespace runs
+# in Kubernetes, wired the same way:
+#
+#   postgres  →  migrate (one-shot, alembic)  →  api + worker
+#
+# The images built here carry the :local tag of the exact repositories CI
+# publishes to, so `docker compose` and the Helm chart never disagree about
+# what the workload is called.
+#
+#   docker compose up --build -d
+#   curl -fsS localhost:8000/healthz
+#   docker compose --profile seed run --rm seed
+#   docker compose down -v
+
+name: preview-platform
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://preview:preview@postgres:5432/preview
+  GIT_SHA: ${GIT_SHA:-dev}
+  PR_NUMBER: ${PR_NUMBER:-local}
+  APP_ENV: ${APP_ENV:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-api-build: &api-build
+  context: ./apps/api
+  dockerfile: Dockerfile
+
+x-db-ready: &db-ready
+  postgres:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: preview
+      POSTGRES_PASSWORD: preview
+      POSTGRES_DB: preview
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U preview -d preview"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # One-shot schema migration, exactly as the cluster runs it:
+  # `alembic upgrade head` from the api image with WORKDIR /app.
+  migrate:
+    build: *api-build
+    image: ghcr.io/alexmachulsky/preview-platform/api:local
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: *api-build
+    image: ghcr.io/alexmachulsky/preview-platform/api:local
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    depends_on: *db-ready
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=3)
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./apps/worker
+      dockerfile: Dockerfile
+    image: ghcr.io/alexmachulsky/preview-platform/worker:local
+    command: ["python", "-m", "worker"]
+    environment:
+      <<: *app-env
+      # Tighter than the 5s production default so the demo drains visibly fast.
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-2}
+    ports:
+      - "9000:9000"
+    depends_on: *db-ready
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:9000/healthz", timeout=3)
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # Optional demo data: `docker compose --profile seed run --rm seed`
+  seed:
+    build: *api-build
+    image: ghcr.io/alexmachulsky/preview-platform/api:local
+    command: ["python", "-m", "app.seed"]
+    environment: *app-env
+    depends_on: *db-ready
+    profiles: ["seed"]
+    restart: "no"
+
+volumes:
+  pgdata:

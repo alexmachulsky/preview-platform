@@ -15,6 +15,9 @@ htmlcov/
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
 crash.log
 crash.*.log
 .terraform.lock.hcl.bak
