@@ -345,3 +345,30 @@ resource "helm_release" "preview_bootstrap" {
     kubernetes_secret_v1.github_pr_token,
   ]
 }
+
+###############################################################################
+# Grafana dashboard for preview environments
+#
+# A plain ConfigMap, picked up by the Grafana sidecar wherever it lives
+# (searchNamespace: ALL) because of the grafana_dashboard label. No CRD, so no
+# ordering concern beyond Grafana existing to read it.
+#
+# Its uid is `preview-app`, which is what the CI pull-request comment links to
+# with the namespace preselected.
+###############################################################################
+
+resource "kubernetes_config_map_v1" "preview_dashboard" {
+  metadata {
+    name      = "preview-app-dashboard"
+    namespace = kubernetes_namespace_v1.monitoring.metadata[0].name
+    labels = merge(local.common_labels, {
+      grafana_dashboard = "1"
+    })
+  }
+
+  data = {
+    "preview-app.json" = file("${path.module}/dashboards/preview-app.json")
+  }
+
+  depends_on = [helm_release.kube_prometheus_stack]
+}
