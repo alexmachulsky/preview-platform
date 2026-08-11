@@ -16,7 +16,7 @@
   namespace  {{ .Release.Namespace }}
   image      {{ include "preview-app.api.image" . }}
   git sha    {{ .Values.env.gitSha }}
-  database   {{ if .Values.postgresql.enabled }}{{ include "preview-app.postgresql.fullname" . }}:{{ include "preview-app.postgresql.port" . }} (in-cluster, {{ if .Values.postgresql.primary.persistence.enabled }}persistent{{ else }}emptyDir — wiped with the pod{{ end }}){{ else }}external{{ end }}
+  database   {{ if .Values.postgresql.enabled }}{{ include "preview-app.postgresql.fullname" . }}:{{ include "preview-app.postgresql.port" . }} (in-cluster, {{ if .Values.postgresql.persistence.enabled }}persistent{{ else }}emptyDir — wiped with the pod{{ end }}){{ else }}external{{ end }}
 
 Watch it come up:
 

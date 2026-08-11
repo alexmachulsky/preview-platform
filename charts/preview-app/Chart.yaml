@@ -22,11 +22,16 @@ maintainers:
   - name: alexmachulsky
     url: https://github.com/alexmachulsky
 
-dependencies:
-  # Bitnami prunes older chart versions from the index and Chart.lock is
-  # git-ignored in this repo, so the constraint is a patch range rather than an
-  # exact pin: `helm dependency update` must keep resolving months from now.
-  - name: postgresql
-    version: ~18.8.0
-    repository: https://charts.bitnami.com/bitnami
-    condition: postgresql.enabled
+# No dependencies on purpose.
+#
+# This chart used the Bitnami postgresql subchart until it was found to resolve
+# to `bitnami/postgresql:latest` — Bitnami has withdrawn every version tag from
+# docker.io/bitnami (only `latest` and signature tags remain; the 3948 versioned
+# tags now live under `bitnamilegacy/`). An unpinnable database image means a
+# preview re-synced next month can come up on a different major version, which
+# is precisely the non-reproducibility this platform exists to prevent.
+#
+# The bundled Postgres is now a ~90-line StatefulSet on the pinned
+# `postgres:16-alpine` — the same image docker-compose runs, so local and
+# preview environments finally share one database build. It also drops an
+# external chart fetch from every Argo CD sync.

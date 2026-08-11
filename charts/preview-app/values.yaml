@@ -198,63 +198,68 @@ ingress:
 database:
   # -- Key inside the Secret that holds the assembled DSN.
   urlKey: DATABASE_URL
-  # -- Length of the generated password. It is generated once and then reused on
-  # every `helm upgrade` via a `lookup` of the live Secret, so upgrading never
-  # rotates the password out from under a running Postgres data directory.
+  # -- Length of the derived password.
   passwordLength: 24
+  # -- Mixed into the password derivation together with the namespace and
+  # release name. The result is deterministic on purpose: Argo CD's repo-server
+  # renders without cluster access, so a `lookup`-based scheme would mint a new
+  # password on every sync while the running database still expected the old
+  # one. Change this to rotate every preview's password at once. See the
+  # preview-app.dbPassword helper for why this is fine here and not in prod.
+  passwordSeed: preview-app
 
-# Bitnami PostgreSQL subchart. Persistence is OFF: a preview is thrown away with
-# its PR and leftover PVCs are exactly the garbage this platform exists to kill.
+# Bundled PostgreSQL — a first-party StatefulSet, not a subchart.
+#
+# Bitnami withdrew every versioned tag of bitnami/postgresql from Docker Hub
+# (only `latest` and signature tags remain; the versions moved to
+# `bitnamilegacy/`), so their subchart can only resolve to an unpinnable
+# `:latest`. Running the same `postgres:16-alpine` docker-compose uses keeps
+# previews reproducible and identical to local development.
 postgresql:
   enabled: true
+
+  image:
+    repository: postgres
+    # -- Pinned deliberately. This is the database a preview's data lands in;
+    # it must not change underneath a re-synced environment.
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
 
   auth:
     username: preview
     database: preview
-    # -- Leave empty to generate + preserve. Set a value to pin the password —
-    # recommended when Argo CD renders the chart, because Argo CD templates
-    # without cluster access and `lookup` therefore returns nothing there.
+    # -- Empty derives a deterministic password (see `database.passwordSeed`).
+    # Set explicitly to inject one from external-secrets or SOPS.
     password: ""
-    # -- MUST resolve to the same name as the chart's own Secret. The subchart
-    # runs this through `tpl`, and `.Release.Name` means the same thing in both
-    # contexts.
-    existingSecret: "{{ .Release.Name }}-db"
-    secretKeys:
-      adminPasswordKey: postgres-password
-      userPasswordKey: password
 
-  # Keep the whole subchart in Argo CD's earliest sync wave so the database is
-  # healthy before the migration hook runs.
-  commonAnnotations:
-    argocd.argoproj.io/sync-wave: "-5"
+  # postgres:16-alpine runs as uid/gid 70. The Debian-based tags use 999 —
+  # changing the image tag without changing these will crash-loop on startup.
+  securityContext:
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
 
-  # Subchart objects are not labelled by this chart's helpers, so `make
-  # previews` would miss them. Keep in sync with `partOf` above — Helm values
-  # cannot reference other values.
-  commonLabels:
-    app.kubernetes.io/part-of: preview-platform
-
-  primary:
-    persistence:
-      enabled: false
-    # A single-replica database that is thrown away with its pull request has no
-    # availability to protect.
-    pdb:
-      create: false
-    # `resources` wins over Bitnami's `resourcesPreset`.
-    resourcesPreset: none
-    resources:
-      requests:
-        cpu: 100m
-        memory: 192Mi
-      limits:
-        cpu: 500m
-        memory: 768Mi
-
-  # The postgres_exporter sidecar would cost another pod's worth of memory per
-  # preview; the api already exports application-level metrics.
-  metrics:
+  # A preview database dies with its pull request, so it holds nothing worth
+  # keeping. Turning this on gives each preview a PVC that outlives a resync —
+  # and leaves exactly the orphaned storage this platform exists to prevent.
+  persistence:
     enabled: false
+    size: 1Gi
+    storageClass: ""
+
+  revisionHistoryLimit: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
 
 # Used only when `postgresql.enabled=false` (shared/managed database). Set
 # `url`, or the host/username/password fields, or `existingSecret` — with none

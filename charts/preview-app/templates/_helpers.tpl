@@ -173,9 +173,9 @@ Name of the postgresql subchart's primary Service. Mirrors the subchart's own
 {{- end -}}
 
 {{/*
-Secret holding the database credentials. The name is derived from the release
-name only, because `postgresql.auth.existingSecret` in values.yaml has to
-resolve to the same string from inside the subchart's `tpl` context.
+Secret holding the database credentials. Derived from the release name, so the
+Postgres StatefulSet and the workloads reach the same object without either
+side being told about it.
 */}}
 {{- define "preview-app.dbSecretName" -}}
 {{- $pg := .Values.postgresql | default dict -}}
@@ -212,66 +212,34 @@ true
 {{/*
 Password for the `preview` user.
 
-Order: an explicitly configured password, then the value already stored in the
-live Secret, then a fresh random string. Reading the live Secret through
-`lookup` is what keeps `helm upgrade` from rotating the password out from under
-a Postgres data directory that was initialised with the old one.
+Derived deterministically from namespace + release + seed, so every render
+produces the same value without needing to read anything from the cluster.
 
-The result is memoised on .Values because every `include` re-executes the
-template: without the cache, the Secret and anything else asking for the
-password would each get a *different* randAlphaNum. Nothing outside the Secret
-consumes it — workloads read DATABASE_URL through a secretKeyRef — but the
-memoisation makes that a design choice rather than a trap.
+The obvious implementation — generate with randAlphaNum, then reuse the live
+Secret's value via `lookup` — cannot work here. `lookup` returns nothing
+whenever there is no cluster connection, and Argo CD's repo-server renders
+exactly that way. Under GitOps every sync would therefore mint a *fresh*
+password and write it to the Secret, while the running Postgres still only
+accepts the one its data directory was initialised with. The api would start
+failing authentication on a sync that changed nothing.
 
-`lookup` returns nothing during `helm template`, `helm lint`, and inside Argo
-CD's repo-server (it renders without cluster access), so pin
-`postgresql.auth.password` for GitOps-driven installs.
+Deterministic derivation sidesteps that entirely: `helm install`, `helm
+upgrade`, `helm template` and Argo CD all compute the identical string.
+
+This suits a preview database that is unreachable outside its namespace and is
+destroyed with its pull request. It is NOT a production pattern — the value is
+recoverable by anyone who can read the chart and knows the release name. A real
+environment should inject the password from external-secrets or SOPS via
+`postgresql.auth.password`, which still takes precedence here.
 */}}
 {{- define "preview-app.dbPassword" -}}
 {{- $pg := .Values.postgresql | default dict -}}
 {{- $auth := $pg.auth | default dict -}}
-{{- $configured := $auth.password | default "" -}}
-{{- if $configured -}}
-{{- $configured -}}
+{{- with $auth.password -}}
+{{- . -}}
 {{- else -}}
-{{- $cached := index .Values "_dbPasswordCache" | default "" -}}
-{{- if not $cached -}}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "preview-app.dbSecretName" .) -}}
-{{- $stored := "" -}}
-{{- if $existing -}}
-{{- $stored = (index ($existing.data | default dict) "password") | default "" -}}
+{{- printf "%s/%s/%s" .Release.Namespace .Release.Name (.Values.database.passwordSeed | default "preview-app") | sha256sum | trunc (int .Values.database.passwordLength) -}}
 {{- end -}}
-{{- if $stored -}}
-{{- $cached = b64dec $stored -}}
-{{- else -}}
-{{- $cached = randAlphaNum (int .Values.database.passwordLength) -}}
-{{- end -}}
-{{- $_ := set .Values "_dbPasswordCache" $cached -}}
-{{- end -}}
-{{- $cached -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Password for the built-in `postgres` superuser. Same reuse rules as above; it is
-never handed to the application.
-*/}}
-{{- define "preview-app.dbAdminPassword" -}}
-{{- $cached := index .Values "_dbAdminPasswordCache" | default "" -}}
-{{- if not $cached -}}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "preview-app.dbSecretName" .) -}}
-{{- $stored := "" -}}
-{{- if $existing -}}
-{{- $stored = (index ($existing.data | default dict) "postgres-password") | default "" -}}
-{{- end -}}
-{{- if $stored -}}
-{{- $cached = b64dec $stored -}}
-{{- else -}}
-{{- $cached = randAlphaNum (int .Values.database.passwordLength) -}}
-{{- end -}}
-{{- $_ := set .Values "_dbAdminPasswordCache" $cached -}}
-{{- end -}}
-{{- $cached -}}
 {{- end -}}
 
 {{/*
