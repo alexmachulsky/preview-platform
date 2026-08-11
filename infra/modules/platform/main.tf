@@ -28,6 +28,15 @@ locals {
   # for the Argo CD repository Secret, where the convention with a token is the
   # literal "git" — which as an API owner produced
   # `api.github.com/repos/git/preview-platform` and a permanent 404.
+  # Unauthenticated GitHub allows 60 API requests/hour per IP. A 30-second
+  # requeue needs 120/hr, so without a token the generator works for roughly
+  # half an hour and then fails with a 403 that persists until the window
+  # rolls — previews silently stop appearing. Observed on this cluster.
+  #
+  # 120s is 30 requests/hour, which fits with headroom. With a token the
+  # configured interval is used as-is.
+  preview_requeue = var.github_token == "" ? max(var.preview_requeue_seconds, 120) : var.preview_requeue_seconds
+
   repo_url_clean = trimsuffix(var.git_repo_url, ".git")
   repo_slug      = regex("github\\.com[:/]([^/]+)/([^/]+)/?$", local.repo_url_clean)
   github_owner   = local.repo_slug[0]
@@ -323,7 +332,7 @@ resource "helm_release" "preview_bootstrap" {
         tokenSecretKey  = "token"
       }
       applicationSet = {
-        requeueAfterSeconds = var.preview_requeue_seconds
+        requeueAfterSeconds = local.preview_requeue
         # Terraform interpolates ${}, the ApplicationSet controller expands
         # {{}}. They do not collide, so the pattern can be built here.
         ingressHost = "pr-{{number}}.${var.base_domain}"
