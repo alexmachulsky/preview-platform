@@ -39,6 +39,22 @@ make urls        # where everything lives
 
 Then open a pull request against this repo and watch `make previews`.
 
+### Give Argo CD a GitHub token
+
+Optional but strongly recommended. Without one the pull-request generator polls
+anonymously, and GitHub's 60 requests/hour limit forces a 120-second interval that
+still runs out if anything else on your IP uses the API.
+
+Create a fine-grained PAT scoped to this repository with **Contents: read** and
+**Pull requests: read**, then:
+
+```bash
+read -rsp 'PAT: ' T && printf 'github_token = "%s"\n' "$T" > infra/local/terraform.tfvars && unset T
+make bootstrap
+```
+
+`*.tfvars` is gitignored.
+
 ### Two local-environment notes
 
 **Ports.** The k3d load balancer binds host **8080/8443**, because Apache already owns
@@ -53,5 +69,19 @@ on this network**, so the platform uses `localtest.me` instead. Before changing
 getent ahostsv4 pr-1.$BASE_DOMAIN   # must print 127.0.0.1
 ```
 
-Run `make help` for the full target list. Architecture and troubleshooting live in
-[`docs/`](docs/).
+Run `make help` for the full target list.
+
+## Documentation
+
+- [**Architecture**](docs/architecture.md) — the loop, the components, and the design
+  decisions that are not obvious from the code
+- [**Runbook**](docs/runbook.md) — every failure mode encountered building this, with
+  the symptom that showed up first
+
+## Roadmap
+
+Deliberately out of scope for v1, in rough priority order: Trivy scanning and Cosign
+signing in CI, Kyverno admission policy, external-secrets for the database credential,
+a TTL reaper for environments whose pull request was abandoned rather than closed, and
+`infra/aws` — VPC, EKS, ECR and a real wildcard domain, reusing the same platform
+module.

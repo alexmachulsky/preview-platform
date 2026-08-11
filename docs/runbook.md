@@ -1,0 +1,206 @@
+# Runbook
+
+Every entry here is a failure that actually happened while building this platform, with
+the symptom that showed up first. They share a theme: the preview loop fails *quietly*.
+Nothing pages you, the sync says `Progressing`, and the URL just 404s.
+
+## Triage
+
+```bash
+make previews                                   # live preview namespaces + Applications
+kubectl -n argocd get applicationset preview-environments \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}: {.message}{"\n"}{end}'
+kubectl -n argocd get app preview-pr-<N> \
+  -o jsonpath='sync={.status.sync.status} health={.status.health.status}{"\n"}'
+kubectl -n preview-pr-<N> get pods
+```
+
+---
+
+## No preview appears at all
+
+### The generator is rate-limited
+
+```
+ParametersGenerated=False: 403 API rate limit exceeded for <ip>
+```
+
+Unauthenticated GitHub allows **60 API requests/hour per IP**. A 30-second requeue needs
+120/hr, so the generator works for roughly half an hour and then fails for the rest of
+the window. No Application is created and nothing says why unless you read the
+ApplicationSet conditions.
+
+Without a token the platform floors the interval at 120s (30/hr). The real fix is a
+token — 5,000/hr:
+
+```bash
+read -rsp 'PAT: ' T && printf 'github_token = "%s"\n' "$T" > infra/local/terraform.tfvars && unset T
+make bootstrap
+```
+
+A fine-grained PAT scoped to this repository with **Contents: read** and
+**Pull requests: read** is sufficient.
+
+### The generator is pointed at the wrong repository
+
+```
+error listing repos: GET https://api.github.com/repos/git/preview-platform/pulls: 404
+```
+
+Owner `git` means something passed Argo CD's HTTPS auth username (`git` is the
+convention for token auth) where the API owner belongs. Owner and repo are derived from
+`git_repo_url`; check that variable, not `github_username`.
+
+---
+
+## The preview exists but the URL 404s
+
+### Pods are stuck in ImagePullBackOff
+
+Check which tag is actually requested:
+
+```bash
+kubectl -n preview-pr-<N> get pod -l app.kubernetes.io/component=api \
+  -o jsonpath='{.items[0].spec.containers[0].image}{"\n"}'
+gh api repos/<owner>/<repo>/pulls/<N> --jq '"sha-" + .head.sha'
+```
+
+**If the two disagree**, CD and CI are tagging differently. The ApplicationSet must use
+`{{head_sha}}`, and CI must tag `github.event.pull_request.head.sha` — *not*
+`GITHUB_SHA`, which on a `pull_request` event is a synthesised merge commit that exists
+nowhere in the PR's history.
+
+**If they agree and the pull still 403s**, the GHCR package is private. Packages pushed
+by Actions are private by default even from a public repository:
+
+```
+failed to fetch anonymous token: 403 Forbidden
+```
+
+Make both packages public at
+`github.com/users/<owner>/packages/container/<repo>%2Fapi/settings`, or configure an
+`image.pullSecrets` entry.
+
+**If they agree and the tag simply is not there**, CI has not finished. Argo CD retries
+with backoff up to 5m and heals on its own.
+
+### The ApplicationSet was edited but nothing changed
+
+`terraform apply` reporting `0 changed` after editing `platform/argocd/` is expected and
+wrong-looking. `helm_release` points at the chart by local path and the provider does
+**not** diff on file contents. Bump `version:` in `platform/argocd/Chart.yaml`, or force
+it:
+
+```bash
+terraform -chdir=infra/local apply -replace=module.platform.helm_release.preview_bootstrap
+```
+
+---
+
+## The sync never finishes
+
+```
+Running: waiting for completion of hook batch/Job/preview-pr-<N>-preview-app-migrate
+```
+
+The migration Job is a sync hook, so Argo CD blocks on it. If the Job cannot start — a
+bad image, a database that never became ready — the sync stays `Progressing` forever and
+Argo CD keeps replaying the *stored* operation rather than re-rendering, so it will
+recreate the Job with the **old** parameters even after you fix the cause.
+
+Clear the stuck operation, then let it re-render:
+
+```bash
+kubectl -n argocd patch app preview-pr-<N> --type json -p '[{"op":"remove","path":"/operation"}]'
+kubectl -n preview-pr-<N> delete job --all
+kubectl -n argocd annotate app preview-pr-<N> argocd.argoproj.io/refresh=hard --overwrite
+```
+
+If it is still wrong, delete the Application; the ApplicationSet rebuilds it from
+scratch within one requeue interval.
+
+---
+
+## A namespace is stuck Terminating
+
+```
+NamespaceFinalizersRemaining=True: argocd.argoproj.io/hook-finalizer in 1 resource instances
+```
+
+A deadlock. The hook Job carries Argo CD's finalizer, which blocks namespace deletion —
+but Argo CD cannot remove it because the Application is itself pending deletion. Usually
+follows a migration Job that never completed.
+
+```bash
+kubectl -n preview-pr-<N> patch job <job-name> \
+  --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+```
+
+The namespace drains within about 10 seconds.
+
+---
+
+## Local development
+
+### `docker compose up` dies with `DuplicateTable`
+
+```
+relation "widgets" already exists
+```
+
+Something created the schema without stamping `alembic_version`. Historically this was
+the test suite pointing at the application's own database. Tests now own `preview_test`
+and create it themselves. Reset:
+
+```bash
+docker compose down -v && docker compose up --build -d
+```
+
+### Tests skip instead of running
+
+```
+no database server behind postgresql+psycopg://…
+```
+
+Expected when nothing is listening. `docker compose up -d postgres` first, or set
+`TEST_DATABASE_URL`. Each suite creates its own test database, so either can run alone.
+
+### Preview hostnames do not resolve
+
+```bash
+getent ahostsv4 pr-1.localtest.me     # must print 127.0.0.1
+```
+
+`sslip.io` and `nip.io` — the usual choices — are hijacked to `208.91.112.55` by some
+resolvers, including the one on the network this was built on. If `localtest.me` is also
+blocked, any wildcard-to-loopback domain works; change `BASE_DOMAIN` and re-run
+`make bootstrap`.
+
+### Nothing is reachable on :8080
+
+The k3d load balancer publishes host `8080/8443` because Apache owns `:80` on the
+development machine. Check `docker port k3d-preview-platform-serverlb`, and rebuild with
+`make up HTTP_PORT=80 HTTPS_PORT=443` if `:80` is free.
+
+---
+
+## Observability
+
+### Prometheus is not scraping a preview
+
+```bash
+curl -sG http://prometheus.localtest.me:8080/api/v1/query \
+  --data-urlencode 'query=up{namespace="preview-pr-<N>"}'
+```
+
+kube-prometheus-stack only selects ServiceMonitors carrying `release:
+kube-prometheus-stack`, and preview namespaces are not known in advance — so
+`serviceMonitorNamespaceSelector` must be `{}` and
+`serviceMonitorSelectorNilUsesHelmValues` false. Both are set in the platform module; a
+scrape gap usually means one was overridden.
+
+### ServiceMonitors show OutOfSync but everything works
+
+Cosmetic. The objects exist and the sync succeeded; Argo CD is diffing defaulted fields
+on a CRD it renders without full schema knowledge. Confirm with
+`kubectl -n preview-pr-<N> get servicemonitor` and the `up` query above.
