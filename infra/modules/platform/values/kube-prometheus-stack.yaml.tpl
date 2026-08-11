@@ -284,3 +284,45 @@ windowsMonitoring:
 
 thanosRuler:
   enabled: false
+
+# Alert rules shipped with the platform.
+#
+# Defined here rather than as a separate PrometheusRule object on purpose: this
+# release installs the PrometheusRule CRD, so anything created alongside it is
+# guaranteed to have a schema to validate against. A standalone
+# kubernetes_manifest would need that CRD to exist at *plan* time, which it
+# does not on a first apply.
+additionalPrometheusRulesMap:
+  preview-platform:
+    groups:
+      - name: preview-environments
+        rules:
+          - alert: PreviewHighErrorRate
+            expr: |
+              sum by (namespace) (rate(http_requests_total{namespace=~"preview-pr-.*",status="5xx"}[5m]))
+                /
+              clamp_min(sum by (namespace) (rate(http_requests_total{namespace=~"preview-pr-.*"}[5m])), 0.001)
+                > 0.05
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Preview {{ $labels.namespace }} is serving 5xx responses"
+              description: >-
+                More than 5% of requests in {{ $labels.namespace }} have failed
+                for 5 minutes. This is a preview environment, so the usual cause
+                is the pull request itself.
+
+          - alert: PreviewWorkerStalled
+            expr: |
+              sum by (namespace) (rate(worker_jobs_processed_total{namespace=~"preview-pr-.*"}[10m])) == 0
+                and
+              sum by (namespace) (worker_poll_iterations_total{namespace=~"preview-pr-.*"}) > 0
+            for: 15m
+            labels:
+              severity: info
+            annotations:
+              summary: "Preview {{ $labels.namespace }} worker has processed nothing for 15m"
+              description: >-
+                The worker is polling but completing no jobs. Idle previews look
+                exactly like this, so it is informational rather than a warning.
