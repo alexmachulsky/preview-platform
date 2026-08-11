@@ -35,10 +35,16 @@ spec:
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
       # Every series carries the PR it came from, so one Grafana dashboard can
       # break down by preview.
+      # `action` is set explicitly even though `replace` is its default. The
+      # CRD applies that default server-side, so a manifest that omits it never
+      # matches the live object and Argo CD reports the Application OutOfSync
+      # forever — a permanent diff that no sync can close.
       relabelings:
-        - targetLabel: pr_number
+        - action: replace
+          targetLabel: pr_number
           replacement: {{ .Values.env.prNumber | quote }}
-        - targetLabel: preview_namespace
+        - action: replace
+          targetLabel: preview_namespace
           replacement: {{ .Release.Namespace | quote }}
 {{- if .Values.worker.enabled }}
 ---
@@ -66,10 +72,16 @@ spec:
       path: {{ .Values.metrics.serviceMonitor.path }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      # `action` is set explicitly even though `replace` is its default. The
+      # CRD applies that default server-side, so a manifest that omits it never
+      # matches the live object and Argo CD reports the Application OutOfSync
+      # forever — a permanent diff that no sync can close.
       relabelings:
-        - targetLabel: pr_number
+        - action: replace
+          targetLabel: pr_number
           replacement: {{ .Values.env.prNumber | quote }}
-        - targetLabel: preview_namespace
+        - action: replace
+          targetLabel: preview_namespace
           replacement: {{ .Release.Namespace | quote }}
 {{- end }}
 {{- end }}
