@@ -21,6 +21,10 @@ module "platform" {
   github_token    = var.github_token
   github_username = var.github_username
 
+  # The bootstrap chart lives in the repository, not in the module, so the
+  # ApplicationSet is reviewable next to everything else it deploys.
+  bootstrap_chart_path = "${path.root}/../../platform/argocd"
+
   grafana_admin_password = var.grafana_admin_password
   prometheus_retention   = var.prometheus_retention
   enable_loki            = var.enable_loki

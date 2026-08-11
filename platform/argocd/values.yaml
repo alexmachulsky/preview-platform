@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# preview-bootstrap — the AppProject and the ApplicationSet.
+#
+# Terraform supplies the repo/domain values; the placeholder patterns below are
+# the interesting part.
+#
+# WHY THE PLACEHOLDERS LIVE IN VALUES
+# An ApplicationSet template is itself a Go template — `{{number}}` is expanded
+# by the ApplicationSet controller, long after Helm is done. Writing those
+# braces in a Helm template would make Helm try to expand them first and fail
+# with `function "number" not defined`, so charts that do this normally end up
+# littered with `{{ ` + "`" + `{{number}}` + "`" + ` }}` escapes.
+#
+# Helm does not recursively template the *contents* of values. Keeping every
+# placeholder here and having the templates emit them verbatim avoids the
+# escaping entirely.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# -- Namespace Argo CD runs in; both objects must live here.
+argocdNamespace: argocd
+
+project:
+  # -- AppProject name. The ApplicationSet references it.
+  name: previews
+  # -- Namespaces previews may be deployed into.
+  namespacePattern: "preview-*"
+
+repo:
+  # -- Repository Argo CD renders the chart from, and watches for PRs.
+  url: https://github.com/alexmachulsky/preview-platform
+  # -- Path to the preview chart inside that repo.
+  chartPath: charts/preview-app
+
+github:
+  owner: alexmachulsky
+  name: preview-platform
+  # -- Secret holding a fine-grained PAT with read-only Contents + Pull
+  # requests. Leave empty to poll anonymously — GitHub allows 60 requests/hour
+  # unauthenticated, which a 30s requeue exhausts in half an hour, so this is
+  # only viable for a quick demo.
+  tokenSecretName: ""
+  tokenSecretKey: token
+  # -- Only build previews for PRs carrying this label. Empty means every open
+  # PR gets an environment.
+  labels: []
+
+applicationSet:
+  # -- How often to ask GitHub for the list of open PRs.
+  requeueAfterSeconds: 30
+  # -- Keep the Application (and so the namespace) when the PR closes. Off is
+  # the entire point: teardown is a side effect of the PR disappearing.
+  preserveResourcesOnDeletion: false
+
+  # ── Placeholder patterns, expanded by the ApplicationSet controller ────────
+  # Available: number, branch, head_sha, head_short_sha, author, title.
+  #
+  # `baseDomain` is substituted by Terraform when it renders these; the braces
+  # are not.
+  namePattern: "preview-pr-{{number}}"
+  namespacePattern: "preview-pr-{{number}}"
+  # Pin each Application to the exact commit CI built, not the branch tip —
+  # otherwise Argo CD can render a chart from a commit whose image does not
+  # exist yet, and the drift never resolves on its own.
+  targetRevision: "{{head_sha}}"
+  imageTag: "sha-{{head_short_sha}}"
+  ingressHost: "pr-{{number}}.localtest.me"
+  prNumber: "{{number}}"
+  gitSha: "{{head_sha}}"
+
+syncPolicy:
+  prune: true
+  selfHeal: true
+  createNamespace: true
+  # Argo CD retries a failed sync with backoff. A preview whose image is still
+  # building is the common case, so this needs to outlast a CI run.
+  retry:
+    limit: 8
+    backoff:
+      duration: 15s
+      factor: 2
+      maxDuration: 5m

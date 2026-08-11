@@ -1,0 +1,16 @@
+apiVersion: v2
+name: preview-bootstrap
+description: |
+  The two Argo CD objects that turn pull requests into environments: the
+  AppProject previews are confined to, and the ApplicationSet that renders one
+  Application per open PR.
+
+  Deliberately a separate release from argo-cd itself. Both objects are
+  instances of CRDs that the argo-cd chart installs, and Helm validates every
+  manifest in a release against the API server *before* installing any of it —
+  so shipping them inside that release can never work on a fresh cluster. It
+  fails with "no matches for kind AppProject". Terraform orders this release
+  after argo-cd, by which point the CRDs are registered.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

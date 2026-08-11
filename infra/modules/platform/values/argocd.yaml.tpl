@@ -118,34 +118,3 @@ dex:
 notifications:
   enabled: false
 
-# The AppProject for preview environments.
-#
-# It ships as part of this release rather than as a kubernetes_manifest
-# resource on purpose: Helm applies a chart's crds/ directory before any
-# template, so the AppProject CRD is guaranteed to exist by the time this object
-# is applied. A kubernetes_manifest would instead need the CRD to exist at
-# *plan* time, which is impossible on a first apply against an empty cluster.
-extraObjects:
-  - apiVersion: argoproj.io/v1alpha1
-    kind: AppProject
-    metadata:
-      name: ${preview_project_name}
-      namespace: ${argocd_namespace}
-      labels:
-        app.kubernetes.io/part-of: preview-platform
-    spec:
-      description: Ephemeral per-pull-request preview environments
-      sourceRepos:
-        - ${git_repo_url}
-        - ${git_repo_url}.git
-      destinations:
-        - server: https://kubernetes.default.svc
-          namespace: ${preview_namespace_pattern}
-      clusterResourceWhitelist:
-        - group: ""
-          kind: Namespace
-      namespaceResourceWhitelist:
-        - group: "*"
-          kind: "*"
-      orphanedResources:
-        warn: false

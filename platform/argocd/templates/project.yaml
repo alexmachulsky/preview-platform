@@ -1,0 +1,35 @@
+{{- /*
+The AppProject every preview Application belongs to.
+
+It is a blast radius, not a formality: an Application in this project may only
+deploy into preview-* namespaces of the local cluster, and may only source from
+this one repository. A compromised or mistaken ApplicationSet template cannot
+reach kube-system, argocd, or monitoring.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ .Values.project.name }}
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  description: Ephemeral per-pull-request preview environments
+  sourceRepos:
+    - {{ .Values.repo.url | quote }}
+    - {{ printf "%s.git" .Values.repo.url | quote }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ .Values.project.namespacePattern | quote }}
+  # Previews create their own Namespace — that is what lets `prune` delete it
+  # when the pull request closes. Namespace is therefore the one cluster-scoped
+  # resource this project is allowed to touch.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: false

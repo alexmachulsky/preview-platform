@@ -1,0 +1,90 @@
+{{- /*
+One Application per open pull request.
+
+The pullRequest generator asks the GitHub API for open PRs on an interval and
+produces one parameter set per PR. The template below turns each into an
+Application; the ApplicationSet controller creates, updates and — when a PR
+disappears from the list — deletes them.
+
+That last part is the whole design. Nothing tears a preview down. It stops
+existing because the pull request stopped existing, and Argo CD reconciles the
+cluster to match. Because the Application owns the Namespace, pruning it takes
+the api, worker, database, secret and quota with it.
+
+Every {{...}} below arrives verbatim from values.yaml so that Helm leaves it
+alone and the ApplicationSet controller expands it. See values.yaml.
+*/ -}}
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: preview-environments
+  namespace: {{ .Values.argocdNamespace }}
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  # Delete the Application as soon as its PR closes rather than leaving an
+  # orphan behind for a human to notice.
+  goTemplate: false
+  generators:
+    - pullRequest:
+        github:
+          owner: {{ .Values.github.owner | quote }}
+          repo: {{ .Values.github.name | quote }}
+          {{- with .Values.github.tokenSecretName }}
+          tokenRef:
+            secretName: {{ . | quote }}
+            key: {{ $.Values.github.tokenSecretKey | quote }}
+          {{- end }}
+          {{- with .Values.github.labels }}
+          labels:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        requeueAfterSeconds: {{ .Values.applicationSet.requeueAfterSeconds }}
+  {{- if not .Values.applicationSet.preserveResourcesOnDeletion }}
+  syncPolicy:
+    # applicationsSync is about what happens to the *Application* when its
+    # generator entry vanishes. Preserving resources here would leave the
+    # namespace running after the PR closed.
+    preserveResourcesOnDeletion: false
+  {{- end }}
+  template:
+    metadata:
+      name: {{ .Values.applicationSet.namePattern | quote }}
+      labels:
+        app.kubernetes.io/part-of: preview-platform
+      annotations:
+        preview-platform/pull-request: {{ .Values.applicationSet.prNumber | quote }}
+    spec:
+      project: {{ .Values.project.name }}
+      source:
+        repoURL: {{ .Values.repo.url | quote }}
+        targetRevision: {{ .Values.applicationSet.targetRevision | quote }}
+        path: {{ .Values.repo.chartPath | quote }}
+        helm:
+          # Exactly the four values the chart documents as CD-supplied.
+          parameters:
+            - name: image.tag
+              value: {{ .Values.applicationSet.imageTag | quote }}
+            - name: ingress.host
+              value: {{ .Values.applicationSet.ingressHost | quote }}
+            - name: env.prNumber
+              value: {{ .Values.applicationSet.prNumber | quote }}
+            - name: env.gitSha
+              value: {{ .Values.applicationSet.gitSha | quote }}
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: {{ .Values.applicationSet.namespacePattern | quote }}
+      syncPolicy:
+        automated:
+          prune: {{ .Values.syncPolicy.prune }}
+          selfHeal: {{ .Values.syncPolicy.selfHeal }}
+        syncOptions:
+          {{- if .Values.syncPolicy.createNamespace }}
+          # The chart also ships a Namespace object so the namespace carries
+          # labels; this covers the window before that object is applied.
+          - CreateNamespace=true
+          {{- end }}
+          - ServerSideApply=true
+        retry:
+          {{- toYaml .Values.syncPolicy.retry | nindent 10 }}

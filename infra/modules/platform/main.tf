@@ -21,6 +21,18 @@ locals {
   grafana_host    = "grafana.${var.base_domain}"
   prometheus_host = "prometheus.${var.base_domain}"
 
+  # Owner and repository for the GitHub API, derived from git_repo_url so there
+  # is exactly one place to change the repository.
+  #
+  # Do NOT reuse github_username here. That variable is the *HTTPS auth* user
+  # for the Argo CD repository Secret, where the convention with a token is the
+  # literal "git" — which as an API owner produced
+  # `api.github.com/repos/git/preview-platform` and a permanent 404.
+  repo_url_clean = trimsuffix(var.git_repo_url, ".git")
+  repo_slug      = regex("github\\.com[:/]([^/]+)/([^/]+)/?$", local.repo_url_clean)
+  github_owner   = local.repo_slug[0]
+  github_repo    = local.repo_slug[1]
+
   # loki-stack names its read/write Service after the release name.
   loki_release_name = "loki"
   loki_url          = "http://${local.loki_release_name}.${var.monitoring_namespace}.svc.cluster.local:3100"
@@ -239,4 +251,88 @@ resource "kubernetes_secret_v1" "argocd_repository" {
   }
 
   type = "Opaque"
+}
+
+###############################################################################
+# GitHub token for the pullRequest generator
+#
+# Separate from the repository Secret above: that one authenticates `git fetch`
+# and is keyed `password`, this one is read by the ApplicationSet controller to
+# call the GitHub REST API and must be keyed `token`.
+#
+# Optional. Without it the generator polls anonymously at 60 requests/hour,
+# which a 30-second requeue burns through in half an hour.
+###############################################################################
+
+resource "kubernetes_secret_v1" "github_pr_token" {
+  count = var.github_token == "" ? 0 : 1
+
+  metadata {
+    name      = "preview-platform-github-token"
+    namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+    labels    = local.common_labels
+  }
+
+  data = {
+    token = var.github_token
+  }
+
+  type = "Opaque"
+}
+
+###############################################################################
+# Preview bootstrap — the AppProject and the ApplicationSet
+#
+# A separate release from argo-cd on purpose. Both objects are instances of
+# CRDs that the argo-cd chart installs, and Helm validates every manifest in a
+# release against the API server before installing any of it. Shipping them
+# inside that release fails on a fresh cluster with:
+#
+#   no matches for kind "AppProject" in version "argoproj.io/v1alpha1"
+#
+# depends_on gives the ordering the CRDs need.
+###############################################################################
+
+resource "helm_release" "preview_bootstrap" {
+  name      = "preview-bootstrap"
+  chart     = var.bootstrap_chart_path
+  namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+
+  create_namespace = false
+  wait             = true
+  timeout          = var.helm_timeout_seconds
+  cleanup_on_fail  = true
+  max_history      = var.helm_max_history
+
+  values = [
+    yamlencode({
+      argocdNamespace = var.argocd_namespace
+      project = {
+        name             = var.preview_project_name
+        namespacePattern = var.preview_namespace_pattern
+      }
+      repo = {
+        url       = trimsuffix(var.git_repo_url, ".git")
+        chartPath = var.preview_chart_path
+      }
+      github = {
+        owner = local.github_owner
+        name  = local.github_repo
+        # Empty when no PAT was supplied, which renders an anonymous generator.
+        tokenSecretName = var.github_token == "" ? "" : kubernetes_secret_v1.github_pr_token[0].metadata[0].name
+        tokenSecretKey  = "token"
+      }
+      applicationSet = {
+        requeueAfterSeconds = var.preview_requeue_seconds
+        # Terraform interpolates ${}, the ApplicationSet controller expands
+        # {{}}. They do not collide, so the pattern can be built here.
+        ingressHost = "pr-{{number}}.${var.base_domain}"
+      }
+    })
+  ]
+
+  depends_on = [
+    helm_release.argocd,
+    kubernetes_secret_v1.github_pr_token,
+  ]
 }

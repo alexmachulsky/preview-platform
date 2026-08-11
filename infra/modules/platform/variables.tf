@@ -202,3 +202,20 @@ variable "argocd_insecure" {
   type        = bool
   default     = true
 }
+
+variable "bootstrap_chart_path" {
+  description = "Filesystem path to the preview-bootstrap chart (platform/argocd). Applied as its own release because its objects are instances of CRDs the argo-cd release installs."
+  type        = string
+}
+
+variable "preview_chart_path" {
+  description = "Path to the preview environment chart inside the Git repository."
+  type        = string
+  default     = "charts/preview-app"
+}
+
+variable "preview_requeue_seconds" {
+  description = "How often the pullRequest generator re-lists open PRs. Anonymous GitHub polling allows only 60 requests/hour, so raise this well above 60 when no token is configured."
+  type        = number
+  default     = 30
+}
