@@ -62,7 +62,11 @@ applicationSet:
   # otherwise Argo CD can render a chart from a commit whose image does not
   # exist yet, and the drift never resolves on its own.
   targetRevision: "{{head_sha}}"
-  imageTag: "sha-{{head_short_sha}}"
+  # Full SHA, not head_short_sha. How many characters the generator truncates
+  # to has varied between Argo CD versions, and a tag that disagrees with CI by
+  # one character does not fail loudly — the preview just sits in
+  # ImagePullBackOff forever. The full SHA cannot drift.
+  imageTag: "sha-{{head_sha}}"
   ingressHost: "pr-{{number}}.localtest.me"
   prNumber: "{{number}}"
   gitSha: "{{head_sha}}"

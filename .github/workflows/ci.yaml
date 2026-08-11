@@ -1,0 +1,182 @@
+name: ci
+
+# A preview environment is only as fresh as the image CI pushed for the PR's
+# head commit, so every push to a PR branch has to rebuild.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+# A second push to the same PR makes the first build irrelevant.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ── Lint and test both services against a real Postgres ────────────────────
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, worker]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: preview
+          POSTGRES_PASSWORD: preview
+          POSTGRES_DB: preview
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U preview"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ${{ matrix.service }}
+        run: pip install --disable-pip-version-check -e "apps/${{ matrix.service }}[dev]" ruff
+
+      # ruff.toml lives at the repository root, so ruff runs from there.
+      - name: Lint
+        run: |
+          ruff check apps/${{ matrix.service }}
+          ruff format --check apps/${{ matrix.service }}
+
+      - name: Test
+        working-directory: apps/${{ matrix.service }}
+        env:
+          # The suite creates and owns preview_test. Pointing it at the
+          # application's own database leaves the schema present but unstamped,
+          # and the next `alembic upgrade head` dies with DuplicateTable.
+          TEST_DATABASE_URL: postgresql+psycopg://preview:preview@localhost:5432/preview_test
+        run: pytest -q
+
+  # ── Build and publish images ───────────────────────────────────────────────
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, worker]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the commit Argo CD will ask for
+        id: sha
+        env:
+          # Passed through env rather than inlined into the script: workflow
+          # expressions are substituted textually before bash ever sees them.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # On a pull_request event GITHUB_SHA is the *merge* commit Actions
+          # synthesised, which exists nowhere in the PR's history. Argo CD's
+          # pullRequest generator reports head_sha — the branch tip. Tagging
+          # with GITHUB_SHA would publish an image no preview ever requests,
+          # leaving the environment in ImagePullBackOff with no obvious cause.
+          SHA="${HEAD_SHA:-$PUSH_SHA}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Tagging for commit $SHA"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          # sha-<full> is the tag the ApplicationSet resolves. The others are
+          # for humans reading `docker images`.
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:sha-${{ steps.sha.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+
+  # ── Tell the reviewer where to look ────────────────────────────────────────
+  comment:
+    needs: build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post or update the preview comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          MARKER="<!-- preview-platform-comment -->"
+          SHORT="${HEAD_SHA:0:7}"
+
+          BODY=$(cat <<EOF
+          $MARKER
+          ### Preview environment
+
+          | | |
+          |---|---|
+          | **URL** | http://pr-${PR}.localtest.me:8080/ |
+          | **Grafana** | http://grafana.localtest.me:8080/d/preview-app?var-namespace=preview-pr-${PR} |
+          | **Namespace** | \`preview-pr-${PR}\` |
+          | **Commit** | \`${SHORT}\` |
+
+          Argo CD reconciles this within ~30s of the build finishing. If the URL
+          404s, the sync has not landed yet:
+
+          \`\`\`
+          kubectl -n preview-pr-${PR} get pods
+          kubectl -n argocd get application preview-pr-${PR}
+          \`\`\`
+
+          <sub>The cluster is local, so these URLs resolve only on the machine
+          running it — \`*.localtest.me\` points at 127.0.0.1. Closing this PR
+          deletes the environment.</sub>
+          EOF
+          )
+
+          # Update in place rather than stacking a new comment on every push.
+          ID=$(gh api "repos/${REPO}/issues/${PR}/comments" \
+                 --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty")
+
+          if [ -n "$ID" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${ID}" -f body="$BODY" >/dev/null
+            echo "Updated comment $ID"
+          else
+            gh api -X POST "repos/${REPO}/issues/${PR}/comments" -f body="$BODY" >/dev/null
+            echo "Created preview comment"
+          fi
