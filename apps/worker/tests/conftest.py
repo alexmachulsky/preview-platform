@@ -127,6 +127,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def engine():
     if _SKIP_REASON is not None:  # pragma: no cover - defensive
         pytest.skip(_SKIP_REASON)
+    # This suite must be able to run on its own. CI gives the api and worker
+    # matrix legs a Postgres container each, so there is no sibling run to have
+    # created preview_test first — which is exactly how this was missed
+    # locally, where the api suite always happened to run first.
+    _ensure_test_database()
     engine = _make_engine()
     Base.metadata.create_all(engine)
     yield engine
