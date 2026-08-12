@@ -18,3 +18,14 @@ keyless:
 # kubelet re-resolves the tag when it pulls, and a tag can move between the
 # admission check and the pull — verifying one image and running another.
 mutateDigest: true
+
+# -- Read signatures stored as OCI 1.1 referrers instead of the legacy
+# `sha256-<digest>.sig` tag.
+#
+# Off, because CI signs with cosign 2.x which writes the legacy tag. Turning it
+# on does NOT make Kyverno 1.18 understand cosign v3 signatures: v3 writes the
+# new Sigstore bundle (artifactType https://sigstore.dev/cosign/sign/v1) and
+# this option expects v2's older referrer type. Tested against real images —
+# both modes reported "no signatures found" for a signature `cosign verify`
+# accepts. The compatibility fix belongs on the producer, in ci.yaml.
+cosignOCI11: false
