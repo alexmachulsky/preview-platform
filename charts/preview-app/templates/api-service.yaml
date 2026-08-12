@@ -12,11 +12,17 @@ metadata:
 spec:
   type: {{ .Values.api.service.type }}
   ports:
-    # One port serves traffic, /metrics, and the probes — the ServiceMonitor
-    # below scrapes this same named port.
+    # Application traffic and the probes. This is the port the Ingress binds,
+    # so everything served here is public at the preview URL.
     - name: http
       port: {{ .Values.api.service.port }}
       targetPort: http
+      protocol: TCP
+    # Scraped by the ServiceMonitor. Deliberately a second port so /metrics is
+    # not reachable through the Ingress.
+    - name: metrics
+      port: {{ .Values.api.service.metricsPort }}
+      targetPort: metrics
       protocol: TCP
   selector:
     {{- include "preview-app.api.selectorLabels" . | nindent 4 }}

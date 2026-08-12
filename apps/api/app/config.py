@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
 
+    #: Port for the metrics-only server. Deliberately not the application port:
+    #: the Ingress routes `/` to that one, so anything served there is public,
+    #: and `/metrics` describes internal request rates, paths and latencies.
+    #: Prometheus scrapes the Service directly and never goes through the
+    #: Ingress, so a second port costs nothing. 0 disables the server, which is
+    #: what the tests use.
+    metrics_port: int = 9000
+
     @property
     def short_sha(self) -> str:
         """First seven characters of the git SHA, the way humans read it."""

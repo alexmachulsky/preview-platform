@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY, generate_latest
 from sqlalchemy.exc import OperationalError
 
 from app.db import get_session
@@ -77,7 +78,24 @@ def test_version_reports_build_identity(client: TestClient) -> None:
     "metric",
     ["http_requests_total", "http_request_duration_seconds", "api_build_info"],
 )
-def test_metrics_exposes_expected_names(client: TestClient, metric: str) -> None:
+def test_metrics_are_collected(client: TestClient, metric: str) -> None:
+    """The instrumentator still records everything the dashboard queries.
+
+    Read from the registry rather than over HTTP: the metrics endpoint is no
+    longer mounted on the application, and the separate server it now runs on
+    is not started under test (metrics_port is 0 there).
+    """
     client.get("/version")  # generate at least one observation
-    body = client.get("/metrics").text
+    body = generate_latest(REGISTRY).decode()
     assert metric in body
+
+
+def test_metrics_are_not_served_on_the_public_port(client: TestClient) -> None:
+    """Regression test for a real finding.
+
+    The Ingress routes `/` to the application port, so anything mounted there
+    is reachable at the preview URL. /metrics used to be, publishing internal
+    request rates, handler paths and latencies to anyone with the link. It now
+    lives on its own port that only Prometheus reaches, via the Service.
+    """
+    assert client.get("/metrics").status_code == 404
