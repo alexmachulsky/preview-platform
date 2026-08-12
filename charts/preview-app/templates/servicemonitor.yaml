@@ -29,7 +29,9 @@ spec:
     matchLabels:
       {{- include "preview-app.api.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    # The metrics port, not the application port. /metrics is not mounted on
+    # the latter — the Ingress routes `/` there and would publish it.
+    - port: metrics
       path: {{ .Values.metrics.serviceMonitor.path }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}

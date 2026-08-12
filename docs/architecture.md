@@ -112,6 +112,14 @@ Rotating the seed only works because api, worker and postgres carry a
 `checksum/db-credentials` annotation. Without it the Secret changes and nothing
 restarts, leaving Postgres on the password it was initialised with.
 
+**Ports.** The api listens on two. `:8000` carries application traffic and the probes
+and is what the Ingress binds; `:9000` serves only `/metrics`, and Prometheus reaches it
+through the Service. They are split because the Ingress routes `/` to the application
+port, so anything mounted there is public at the preview URL — `/metrics` published
+internal request rates, handler paths and latencies to anyone with the link. The
+NetworkPolicy mirrors the split: ingress-nginx may reach `:8000`, monitoring may reach
+`:9000`, and neither may reach the other.
+
 **What is deliberately not defended.** Previews trust the pull request's code. Anything
 that code can do inside its own namespace, it can do. The boundary is the namespace,
 which is why fork pull requests do not get an environment without a maintainer
@@ -176,7 +184,8 @@ its pull request is exactly the garbage this platform exists to prevent.
 ## Repository layout
 
 ```
-apps/api          FastAPI: widgets/jobs, health probes, /metrics, PR landing page
+apps/api          FastAPI: widgets/jobs, health probes, PR landing page (:8000)
+                  plus /metrics on :9000, which the Ingress does not route
 apps/worker       claims jobs with FOR UPDATE SKIP LOCKED, exports counters
 charts/preview-app        the environment, rendered once per pull request
 platform/argocd           AppProject + ApplicationSet (its own Helm release)

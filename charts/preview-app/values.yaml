@@ -84,11 +84,18 @@ api:
 
   # -- Container port. The api listens on :8000 (fixed by the app contract).
   containerPort: 8000
+  # -- Metrics port. Separate from containerPort on purpose: the Ingress routes
+  # `/` to containerPort, so anything served there is reachable at the preview
+  # URL. Prometheus scrapes this one through the Service and never through the
+  # Ingress. Must match METRICS_PORT in the api container.
+  metricsPort: 9000
 
   service:
     type: ClusterIP
-    # -- Service port; also the port the Ingress and the ServiceMonitor target.
+    # -- Service port the Ingress targets.
     port: 8000
+    # -- Service port the ServiceMonitor targets. Not exposed by the Ingress.
+    metricsPort: 9000
     annotations: {}
 
   # Liveness never touches the database (a dead DB must not restart the api);

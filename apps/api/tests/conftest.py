@@ -40,6 +40,10 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("GIT_SHA", "abc1234deadbeef")
 os.environ.setdefault("PR_NUMBER", "4242")
 os.environ.setdefault("APP_ENV", "test")
+# 0 disables the metrics server. Every test in this suite imports the app and
+# runs its lifespan; binding a real port would make the suite fail whenever
+# 9000 is busy, and would leave a listening socket behind.
+os.environ.setdefault("METRICS_PORT", "0")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 
 from fastapi.testclient import TestClient  # noqa: E402

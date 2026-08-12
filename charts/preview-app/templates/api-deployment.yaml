@@ -52,8 +52,14 @@ spec:
             - name: http
               containerPort: {{ .Values.api.containerPort }}
               protocol: TCP
+            # Metrics only. Never referenced by the Ingress.
+            - name: metrics
+              containerPort: {{ .Values.api.metricsPort }}
+              protocol: TCP
           env:
             {{- include "preview-app.commonEnv" . | nindent 12 }}
+            - name: METRICS_PORT
+              value: {{ .Values.api.metricsPort | quote }}
           # /healthz never touches the database: a database outage must not turn
           # into a restart loop. /readyz does, so the pod leaves the Service
           # endpoints instead.

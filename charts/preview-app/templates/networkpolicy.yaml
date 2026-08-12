@@ -85,18 +85,28 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # Public traffic: the ingress controller, and only to the application port.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }}
-        {{- if .Values.metrics.serviceMonitor.enabled }}
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
-        {{- end }}
       ports:
         - port: http
           protocol: TCP
+    {{- if .Values.metrics.serviceMonitor.enabled }}
+    # Scrapes: monitoring, and only to the metrics port. Kept as a separate
+    # rule rather than adding monitoring to the one above, which would have let
+    # Prometheus' namespace reach the application port too — the pods there run
+    # third-party code, and the point of the split port is that /metrics and
+    # public traffic do not share a door.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: metrics
+          protocol: TCP
+    {{- end }}
 {{- if .Values.worker.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

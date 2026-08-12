@@ -5,8 +5,10 @@ Contract with the rest of the platform:
 * listens on ``0.0.0.0:8000``
 * ``/healthz`` is the liveness probe and never touches the database
 * ``/readyz`` is the readiness probe and does exactly one ``SELECT 1``
-* ``/metrics`` is scraped by Prometheus with the instrumentator's default
-  metric names (``http_requests_total``, ``http_request_duration_seconds``)
+* ``/metrics`` is served on a *separate* port (``METRICS_PORT``, default 9000)
+  and never on the public application port, because the Ingress routes ``/``
+  there. Metric names are the instrumentator's defaults
+  (``http_requests_total``, ``http_request_duration_seconds``)
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from prometheus_client import Gauge
+from prometheus_client import Gauge, start_http_server
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -67,6 +69,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pr_number=settings.pr_number,
         app_env=settings.app_env,
     ).set(1)
+    if settings.metrics_port:
+        # Daemon thread; dies with the process. Started here rather than at
+        # import time so the test suite, which imports this module, does not
+        # bind a port.
+        start_http_server(settings.metrics_port)
+        logger.info(
+            "metrics server listening",
+            extra={"event": "startup", "port": settings.metrics_port},
+        )
+
     logger.info("api starting", extra={"event": "startup"})
     yield
     logger.info("api stopping", extra={"event": "shutdown"})
@@ -83,10 +95,15 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Default metric set on purpose: the Grafana dashboard queries
 # http_requests_total and http_request_duration_seconds by name.
+# `.instrument(app)` without `.expose(app)`. Exposing would mount /metrics on
+# the application port, and the Ingress routes `/` there — publishing internal
+# request rates, handler paths and latencies to anyone who can reach the
+# preview URL. The metrics server below binds a separate port instead, which
+# Prometheus reaches through the Service; scrapes never traverse the Ingress.
 Instrumentator(
     should_group_status_codes=True,
     excluded_handlers=["/metrics", "/healthz"],
-).instrument(app).expose(app, endpoint="/metrics", include_in_schema=True)
+).instrument(app)
 
 
 def _job_counts(session: Session) -> JobCounts:
