@@ -19,7 +19,17 @@ RUN python -m venv /opt/venv \
  && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" \
       > /tmp/requirements.txt \
  && /opt/venv/bin/pip install --upgrade pip \
- && /opt/venv/bin/pip install -r /tmp/requirements.txt
+ && /opt/venv/bin/pip install -r /tmp/requirements.txt \
+ # Strip the build tooling out of the venv that gets copied into the runtime
+ # image. Nothing at runtime imports pip, setuptools or wheel.
+ #
+ # This is also the entire fix for the image's fixable CVEs. Both of them —
+ # msgpack GHSA-6v7p-g79w-8964 and setuptools CVE-2025-47273 — were reported
+ # against packages pip *vendors*, which Trivy reads from pip's dist-info;
+ # neither was ever imported by this application, and no setuptools package
+ # exists in the image at all. Verified by building with and without this
+ # line against the same base: 2 fixable findings become 0.
+ && /opt/venv/bin/pip uninstall --yes pip setuptools wheel
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
