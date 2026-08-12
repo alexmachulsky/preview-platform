@@ -19,6 +19,37 @@ kubectl -n preview-pr-<N> get pods
 
 ## No preview appears at all
 
+### The pull request has no `preview` label
+
+The most likely cause, and the one that looks least like a fault: the generator lists
+only labelled PRs, so an unlabelled one is invisible to it. Argo CD is working exactly as
+configured and reports nothing wrong.
+
+```bash
+gh pr view <N> --json labels --jq '.labels[].name'
+```
+
+Add it back with a `/preview` comment on the PR, or directly:
+
+```bash
+gh pr edit <N> --add-label preview
+```
+
+Three things remove or withhold the label:
+
+- **The nightly reaper** — no activity for 3 days. It always comments on the PR before
+  unlabelling, so check the PR's timeline; if there is no such comment, this was not it.
+- **A fork PR** — never labelled automatically, by design. Label it by hand after
+  reviewing the diff.
+- **The `label` job failed** on open. `gh run list --workflow preview-lifecycle.yaml`.
+
+To confirm the filter itself is what the cluster is running:
+
+```bash
+kubectl -n argocd get applicationset preview-environments \
+  -o jsonpath='{.spec.generators[0].pullRequest.github.labels}'
+```
+
 ### The generator is rate-limited
 
 ```

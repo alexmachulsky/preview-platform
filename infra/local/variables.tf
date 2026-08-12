@@ -66,6 +66,17 @@ variable "github_username" {
   default     = "git"
 }
 
+variable "preview_label" {
+  description = <<-EOT
+    Pull request label a PR needs before it gets an environment. Added on open
+    and removed after a few idle days by the preview-lifecycle workflow, so it
+    doubles as the way abandoned previews are reclaimed. "" gives every open PR
+    an environment and disables reclamation.
+  EOT
+  type        = string
+  default     = "preview"
+}
+
 ###############################################################################
 # Observability
 ###############################################################################

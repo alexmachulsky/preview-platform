@@ -1,0 +1,203 @@
+name: preview-lifecycle
+
+# Which pull requests deserve an environment, and for how long.
+#
+# The `preview` label is the switch. Argo CD's pullRequest generator only lists
+# PRs carrying it, so adding the label creates an environment and removing it
+# destroys one — through exactly the same reconcile path a closed PR takes.
+# Nothing here talks to the cluster, and no job deletes a namespace.
+#
+#   opened / reopened  → add the label      → environment appears
+#   idle for N days    → remove the label   → environment disappears
+#   comment "/preview" → add it back        → environment returns
+#
+# The alternative was a CronJob in-cluster that deletes stale namespaces. It
+# would have lost: Argo CD's selfHeal recreates anything deleted behind its
+# back, so the reaper and the controller would fight every three minutes.
+# Withdrawing the PR from the generator's result set is the only way to remove
+# a preview that the platform's own controller agrees with.
+
+on:
+  pull_request:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+  schedule:
+    # Off the hour: GitHub queues scheduled workflows and drops them under load
+    # at popular times.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be reaped without changing anything"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PREVIEW_LABEL: preview
+  # Days without activity before a preview is reclaimed. Any push, comment or
+  # review bumps a PR's updated_at, so this measures abandonment rather than
+  # age — a PR under review for two weeks keeps its environment.
+  STALE_AFTER_DAYS: "3"
+
+jobs:
+  # ── Give new pull requests an environment ──────────────────────────────────
+  label:
+    # Fork PRs get a read-only token, so the label could not be applied anyway.
+    # That is the desired outcome rather than a limitation worked around: a
+    # preview built from a fork would run unreviewed code inside the cluster,
+    # against a namespace that can reach the platform's own services. Previews
+    # for forks need a maintainer to add the label by hand, which is a review.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Add the preview label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # `gh pr edit --add-label` fails on a label the repository has never
+          # seen, so a fresh clone of this repo would break on its first PR.
+          if ! gh label list --repo "$REPO" --json name --jq '.[].name' \
+               | grep -qxF "$PREVIEW_LABEL"; then
+            gh label create "$PREVIEW_LABEL" --repo "$REPO" \
+              --color 0E8A16 \
+              --description "Argo CD keeps an ephemeral environment for this PR"
+            echo "Created the $PREVIEW_LABEL label"
+          fi
+
+          gh pr edit "$PR" --repo "$REPO" --add-label "$PREVIEW_LABEL"
+          echo "Labelled PR #$PR — Argo CD will pick it up on its next poll"
+
+  # ── Bring a reaped preview back ────────────────────────────────────────────
+  revive:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/preview')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Restore the preview label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          # Only people who could merge the PR may spend cluster capacity on
+          # it. github.event.comment.body is never interpolated into the shell.
+          AUTHOR_ROLE: ${{ github.event.comment.author_association }}
+        run: |
+          set -euo pipefail
+
+          case "$AUTHOR_ROLE" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *)
+              echo "::notice::/preview from a $AUTHOR_ROLE is ignored"
+              exit 0
+              ;;
+          esac
+
+          gh pr edit "$PR" --repo "$REPO" --add-label "$PREVIEW_LABEL"
+          echo "Restored the preview for PR #$PR"
+
+  # ── Reclaim environments nobody is using ───────────────────────────────────
+  reap:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Remove the label from idle pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          CUTOFF=$(date -u -d "$STALE_AFTER_DAYS days ago" +%s)
+          echo "Reaping previews idle since $(date -u -d "@$CUTOFF" --iso-8601=seconds)"
+
+          # Read the whole list before looping. A `gh ... | while read` pipeline
+          # runs the loop body in a subshell, so the counters below would be
+          # discarded the moment the pipeline ends.
+          OPEN=$(gh pr list --repo "$REPO" --state open \
+                   --label "$PREVIEW_LABEL" --limit 200 \
+                   --json number,updatedAt \
+                   --jq '.[] | [.number, .updatedAt] | @tsv')
+
+          if [ -z "$OPEN" ]; then
+            echo "No labelled pull requests are open — nothing to do."
+            exit 0
+          fi
+
+          REAPED=0
+          KEPT=0
+
+          while IFS=$'\t' read -r NUMBER UPDATED_AT; do
+            [ -n "$NUMBER" ] || continue
+            UPDATED=$(date -u -d "$UPDATED_AT" +%s)
+            IDLE_DAYS=$(( ( $(date -u +%s) - UPDATED ) / 86400 ))
+
+            if [ "$UPDATED" -ge "$CUTOFF" ]; then
+              echo "  #$NUMBER  keep   (idle ${IDLE_DAYS}d)"
+              KEPT=$(( KEPT + 1 ))
+              continue
+            fi
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  #$NUMBER  REAP   (idle ${IDLE_DAYS}d) — dry run, not touched"
+              REAPED=$(( REAPED + 1 ))
+              continue
+            fi
+
+            echo "  #$NUMBER  reap   (idle ${IDLE_DAYS}d)"
+
+            # Built with printf rather than a heredoc: this is nested two levels
+            # inside a YAML block scalar, and a heredoc terminator has to sit in
+            # column 0 after YAML strips the block indentation.
+            BODY=$(printf '%s\n' \
+              "### Preview environment reclaimed" \
+              "" \
+              "No activity for ${IDLE_DAYS} days, so the \`${PREVIEW_LABEL}\` label was removed" \
+              "and Argo CD has torn the environment down. Nothing about this pull request" \
+              "changed — the branch, the commits and the review are untouched." \
+              "" \
+              "Comment \`/preview\` to bring it back.")
+
+            # Comment before unlabelling. If the label went first and the comment
+            # then failed, the environment would vanish with no explanation on
+            # the PR. The comment also bumps updated_at, so doing it second would
+            # make an already-reaped PR look active on the next run.
+            gh pr comment "$NUMBER" --repo "$REPO" --body "$BODY"
+            gh pr edit "$NUMBER" --repo "$REPO" --remove-label "$PREVIEW_LABEL"
+            REAPED=$(( REAPED + 1 ))
+          done <<< "$OPEN"
+
+          echo "Kept $KEPT, reaped $REAPED."
+          {
+            echo "### Preview reaper"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Idle threshold | ${STALE_AFTER_DAYS}d |"
+            echo "| Kept | $KEPT |"
+            echo "| Reaped | $REAPED |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -23,6 +23,12 @@ BASE_DOMAIN ?= localtest.me
 CONTEXT     := k3d-$(CLUSTER)
 TF_DIR      := infra/local
 
+# Debian and Ubuntu ship no `python` unless python-is-python3 is installed, so
+# spelling it out is the difference between `make test` working on a fresh
+# checkout and failing with "command not found". A virtualenv that provides
+# `python` still wins: override with PYTHON=python.
+PYTHON      ?= python3
+
 # ── Cluster lifecycle ─────────────────────────────────────────────────────────
 
 .PHONY: up
@@ -66,8 +72,8 @@ dev-down: ## Stop the docker compose stack and drop its volumes
 
 .PHONY: test
 test: ## Run unit tests for both services
-	cd apps/api && python -m pytest -q
-	cd apps/worker && python -m pytest -q
+	cd apps/api && $(PYTHON) -m pytest -q
+	cd apps/worker && $(PYTHON) -m pytest -q
 
 .PHONY: lint
 lint: ## Lint and format-check both services

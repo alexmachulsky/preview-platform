@@ -330,6 +330,8 @@ resource "helm_release" "preview_bootstrap" {
         # Empty when no PAT was supplied, which renders an anonymous generator.
         tokenSecretName = var.github_token == "" ? "" : kubernetes_secret_v1.github_pr_token[0].metadata[0].name
         tokenSecretKey  = "token"
+        # A list, because the generator ANDs every entry. One is enough here.
+        labels = var.preview_label == "" ? [] : [var.preview_label]
       }
       applicationSet = {
         requeueAfterSeconds = local.preview_requeue

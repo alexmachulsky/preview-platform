@@ -46,6 +46,38 @@ Because the Application owns the Namespace, pruning it takes the api, worker, da
 secret and quota with it. That is why the chart ships a `Namespace` object rather than
 relying only on `CreateNamespace=true`.
 
+## Lifecycle: the label is the switch
+
+The generator lists only pull requests carrying the `preview` label, which makes one
+label the platform's entire admission and reclamation policy:
+
+| Event | Actor | Effect |
+|---|---|---|
+| PR opened or reopened | `preview-lifecycle` workflow | label added → environment appears |
+| 3 days without activity | `preview-lifecycle` nightly cron | label removed → environment reclaimed |
+| Comment `/preview` | `preview-lifecycle` workflow | label restored → environment returns |
+| PR closed or merged | GitHub | PR leaves the list → environment gone |
+
+Every row ends the same way: the PR's presence in the generator's result set changed, and
+Argo CD reconciled. **No workflow, job or human ever deletes a namespace.**
+
+That constraint is not aesthetic. The obvious design — a CronJob that deletes namespaces
+older than a TTL — cannot work here, because `selfHeal` recreates anything removed behind
+Argo CD's back. A reaper and the controller would fight on a three-minute cycle. Removing
+the PR from the generator's input is the only teardown the controller agrees with.
+
+Idleness is measured from the PR's `updated_at`, so a push, comment or review keeps an
+environment alive. It reclaims *abandoned* branches, not old ones: a PR under review for
+two weeks keeps its preview the whole time.
+
+Fork pull requests are never labelled automatically. A preview runs the PR's code inside
+the cluster, so building one from an untrusted fork hands a stranger a namespace next to
+the platform's own services. Maintainers can label a fork PR by hand, which makes that a
+reviewed decision rather than a default.
+
+Setting `preview_label = ""` disables the whole mechanism and gives every open PR an
+environment — fine on a quiet repository, but with no way to reclaim capacity.
+
 ## Components
 
 | Layer | Choice | Notes |
