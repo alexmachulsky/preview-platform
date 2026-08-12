@@ -157,6 +157,38 @@ Note that these policies do nothing on a CNI that does not enforce NetworkPolicy
 apply cleanly either way, so confirm enforcement rather than assuming it — k3s enforces
 by default.
 
+### A preview Application is permanently OutOfSync on its Deployments
+
+```
+OutOfSync: Deployment preview-pr-<N>-preview-app-api
+OutOfSync: Deployment preview-pr-<N>-preview-app-worker
+health: Healthy
+```
+
+Healthy and OutOfSync together, forever, on a diff no sync closes — the live
+Deployment image carries an `@sha256:...` the rendered chart does not.
+
+Kyverno wrote it. A rule matching `Pod` is auto-expanded to every pod controller
+unless told otherwise, and the generated rule applies `mutateDigest` to the
+Deployment. Check for the generated rules:
+
+```bash
+kubectl get clusterpolicy verify-preview-images \
+  -o jsonpath='{.status.autogen.rules[*].name}{"\n"}'
+```
+
+`autogen-...` entries mean autogen is on. The policy sets
+`pod-policies.kyverno.io/autogen-controllers: none` to prevent this; if that
+annotation is lost, every preview goes OutOfSync while looking healthy.
+
+With autogen off, an unsigned image no longer fails at `kubectl apply` of the
+Deployment — the Deployment applies and creates zero pods. Look at the
+ReplicaSet, not the Deployment:
+
+```bash
+kubectl -n preview-pr-<N> get rs -o jsonpath='{.items[0].status.conditions[0].message}'
+```
+
 ### Kyverno rejects an image CI just signed
 
 ```

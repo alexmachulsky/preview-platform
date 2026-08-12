@@ -28,6 +28,17 @@ metadata:
     app.kubernetes.io/part-of: preview-platform
     app.kubernetes.io/managed-by: {{ .Release.Service }}
   annotations:
+    # Match Pods only. Kyverno otherwise auto-generates equivalent rules for
+    # every pod controller, and those rules apply mutateDigest to the
+    # *Deployment* — which Argo CD renders without a digest, so the Application
+    # goes permanently OutOfSync on a diff no sync can close. Observed on
+    # preview-pr-5: both Deployments OutOfSync, health Healthy, forever.
+    #
+    # Verification is unaffected. Every Pod still passes through this rule on
+    # creation, and still gets its image pinned to the verified digest. The only
+    # loss is where a bad image surfaces: at Pod creation rather than at
+    # `kubectl apply` of the Deployment.
+    pod-policies.kyverno.io/autogen-controllers: none
     policies.kyverno.io/title: Verify preview image signatures
     policies.kyverno.io/category: Supply Chain
     policies.kyverno.io/severity: high

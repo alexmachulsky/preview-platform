@@ -164,6 +164,11 @@ pins the certificate *subject*, not merely the presence of a signature: keyless 
 is available to any GitHub Actions run anywhere, so "is it signed" alone would accept an
 image signed by a stranger's repository.
 
+The verified digest is pinned into the Pod, so the kubelet cannot re-resolve a tag that
+moved between admission and pull. Pod controllers are deliberately excluded from that
+mutation: Kyverno would otherwise rewrite the Deployment too, and Argo CD renders it
+without a digest — a permanent OutOfSync on a diff no sync can close.
+
 It fails closed. If Kyverno is down or Sigstore is unreachable, matching pods do not
 start. That is the correct posture for a control meant to be unbypassable and a real
 operational cost, bounded by the narrow match: preview namespaces, our images only.
