@@ -208,6 +208,29 @@ database:
   # preview-app.dbPassword helper for why this is fine here and not in prod.
   passwordSeed: preview-app
 
+# ── Network isolation ─────────────────────────────────────────────────────────
+# Deny-by-default in both directions, with holes only for the paths a preview
+# actually uses. Off means any pod in the cluster can reach this preview's
+# database, whose password is derivable from the chart — see the dbPassword
+# helper and templates/networkpolicy.yaml.
+networkPolicy:
+  # -- Apply the policies. Requires a CNI that enforces NetworkPolicy; k3s does
+  # by default. On a CNI that ignores them these objects apply cleanly and
+  # protect nothing, so verify rather than assume.
+  enabled: true
+  # -- Namespace running the ingress controller, allowed to reach the api.
+  ingressNamespace: ingress-nginx
+  # -- Namespace running Prometheus, allowed to scrape api and worker.
+  monitoringNamespace: monitoring
+  # -- Namespace running CoreDNS. Egress to :53 here is unconditional; without
+  # it no name resolves and nothing works.
+  dnsNamespace: kube-system
+  # -- Let previews reach arbitrary external addresses. The bundled api and
+  # worker need nothing outside their own namespace, so this stays off; turn it
+  # on for a preview that calls a third-party API, accepting that it also
+  # re-opens the rest of the cluster.
+  allowExternalEgress: false
+
 # Bundled PostgreSQL — a first-party StatefulSet, not a subchart.
 #
 # Bitnami withdrew every versioned tag of bitnami/postgresql from Docker Hub

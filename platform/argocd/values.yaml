@@ -69,6 +69,11 @@ applicationSet:
   imageTag: "sha-{{head_sha}}"
   ingressHost: "pr-{{number}}.localtest.me"
   prNumber: "{{number}}"
+  # -- Seed mixed into each preview's derived database password. Set by
+  # Terraform to a value that exists only in the cluster; empty falls back to
+  # the seed committed in the preview chart, which is public and therefore
+  # computable by anyone.
+  dbPasswordSeed: ""
   gitSha: "{{head_sha}}"
 
 syncPolicy:

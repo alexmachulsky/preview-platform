@@ -28,10 +28,16 @@ spec:
       labels:
         {{- include "preview-app.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
-      {{- with .Values.worker.podAnnotations }}
+      # Rolls the pod whenever the derived credential changes. Without it a
+      # changed database.passwordSeed rewrites the Secret while every pod keeps
+      # running with the old value — and Postgres, initialised from the old
+      # password, then rejects the api and worker. The rotation the seed
+      # advertises only actually works because of this line.
       annotations:
+        checksum/db-credentials: {{ include "preview-app.databaseUrl" . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       {{- if .Values.image.pullSecrets }}
       {{- include "preview-app.imagePullSecrets" . | nindent 6 }}

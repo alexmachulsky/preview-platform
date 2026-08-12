@@ -1,0 +1,160 @@
+{{- /*
+Network isolation for a preview namespace.
+
+Without these, "isolated environment per pull request" is only true of the
+Kubernetes objects, not of the network. Every namespace can reach every other
+namespace by default, so any pod in the cluster can open a connection to any
+preview's Postgres — and the credential is derivable (see the dbPassword
+helper), so reaching it is the whole attack. The database user is the one the
+official postgres image creates from POSTGRES_USER, which is a *superuser*,
+which turns cross-namespace reachability into `COPY ... FROM PROGRAM` inside
+the database container.
+
+The model is deny-by-default in both directions, with four holes:
+
+  ingress-nginx  → api       :http      so the preview URL works
+  monitoring     → api       :http      so Prometheus can scrape
+  monitoring     → worker    :metrics   likewise
+  same namespace → postgres  :5432      so only this preview's own pods connect
+
+Egress is DNS plus the namespace itself. The api and worker talk to nothing
+else — images are pulled by the kubelet, not by the pod, so no registry rule is
+needed. Set `networkPolicy.allowExternalEgress: true` if a preview ever needs
+to call out.
+
+Namespace matching uses `kubernetes.io/metadata.name`, which the API server
+sets and maintains on every namespace; matching a hand-applied label would fail
+open the moment someone forgot it.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-8")) | nindent 4 }}
+spec:
+  # Empty selector: every pod in the namespace, including ones added later.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # DNS. Without this nothing resolves and every other rule is untestable,
+    # because the pods cannot even find the service names they are allowed to
+    # reach. Both protocols: TCP is used for responses over 512 bytes.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # This preview's own pods — api and worker reaching their database.
+    - to:
+        - podSelector: {}
+    {{- if .Values.networkPolicy.allowExternalEgress }}
+    # Opt-in: everything else, for previews whose code calls a third party.
+    # Note this also re-opens the rest of the cluster.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.fullname" . }}-allow-api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-8")) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.api.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace }}
+        {{- if .Values.metrics.serviceMonitor.enabled }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+{{- if .Values.worker.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.fullname" . }}-allow-worker-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-8")) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.worker.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # The worker serves no application traffic — this is the metrics and health
+    # port only, so nothing but Prometheus has a reason to connect.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}
+      ports:
+        - port: metrics
+          protocol: TCP
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "preview-app.fullname" . }}-allow-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "preview-app.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  annotations:
+    {{- include "preview-app.annotations" (dict "ctx" $ "extra" (dict
+        "argocd.argoproj.io/sync-wave" "-8")) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "preview-app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: database
+  policyTypes:
+    - Ingress
+  ingress:
+    # podSelector with no namespaceSelector means "pods in this namespace",
+    # which is the entire point: this preview's api, worker, migrate and seed
+    # and nothing else in the cluster.
+    - from:
+        - podSelector: {}
+      ports:
+        - port: postgresql
+          protocol: TCP
+{{- end }}
+{{- end }}

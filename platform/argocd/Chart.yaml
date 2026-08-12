@@ -18,5 +18,5 @@ type: application
 # diff on the chart's file contents — editing a template and re-running
 # `terraform apply` reports "0 changed" and silently leaves the old
 # ApplicationSet running. The version is the signal that something moved.
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.3.0
+appVersion: "0.3.0"

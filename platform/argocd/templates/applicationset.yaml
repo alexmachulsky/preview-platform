@@ -72,6 +72,13 @@ spec:
               value: {{ .Values.applicationSet.prNumber | quote }}
             - name: env.gitSha
               value: {{ .Values.applicationSet.gitSha | quote }}
+            {{- with .Values.applicationSet.dbPasswordSeed }}
+            # Keeps each preview's derived database password out of the public
+            # repository. Empty falls back to the chart's committed seed, which
+            # anyone can compute from — see the module that sets this.
+            - name: database.passwordSeed
+              value: {{ . | quote }}
+            {{- end }}
       destination:
         server: https://kubernetes.default.svc
         namespace: {{ .Values.applicationSet.namespacePattern | quote }}

@@ -302,6 +302,33 @@ resource "kubernetes_secret_v1" "github_pr_token" {
 # depends_on gives the ordering the CRDs need.
 ###############################################################################
 
+###############################################################################
+# Preview database password seed
+#
+# Each preview derives its Postgres password from
+# sha256(namespace / release / seed). The derivation has to be deterministic:
+# Argo CD's repo-server renders the chart with no cluster access, so anything
+# random or `lookup`-based would mint a new password on every sync while the
+# running database still expected the old one.
+#
+# Deterministic is fine. Deterministic *from published inputs* is not — the
+# namespace and release name are both "preview-pr-<N>", so with the seed
+# committed in values.yaml anyone who can read this public repository can
+# compute any preview's database password. Combined with a cluster that has no
+# NetworkPolicy that is direct cross-preview database access, as the postgres
+# user the official image creates, which is a superuser.
+#
+# The chart's committed seed stays as the fallback for a plain `helm install`.
+# Under GitOps this value overrides it, and it exists only inside the cluster.
+###############################################################################
+
+resource "random_password" "preview_db_seed" {
+  length = 32
+  # Alphanumeric only: the value is passed as a Helm `--set` parameter, where
+  # commas and backslashes have meaning and would need escaping.
+  special = false
+}
+
 resource "helm_release" "preview_bootstrap" {
   name      = "preview-bootstrap"
   chart     = var.bootstrap_chart_path
@@ -335,6 +362,7 @@ resource "helm_release" "preview_bootstrap" {
       }
       applicationSet = {
         requeueAfterSeconds = local.preview_requeue
+        dbPasswordSeed      = random_password.preview_db_seed.result
         # Terraform interpolates ${}, the ApplicationSet controller expands
         # {{}}. They do not collide, so the pattern can be built here.
         ingressHost = "pr-{{number}}.${var.base_domain}"
