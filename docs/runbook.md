@@ -86,6 +86,30 @@ convention for token auth) where the API owner belongs. Owner and repo are deriv
 
 ## The preview exists but the URL 404s
 
+### First: do not health-check a preview with `/healthz`
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' http://pr-99.localtest.me:8080/healthz   # 200
+kubectl get ns preview-pr-99                                                   # NotFound
+```
+
+Both of those are correct. ingress-nginx's *default* server — the one that answers a
+hostname matching no Ingress rule — serves its own `/healthz` with a 200 on port 80. The
+path collides with the api's liveness endpoint, so probing it through the ingress passes
+for a preview that was never created, one whose pods are all crashing, and one that is
+perfectly healthy, indistinguishably.
+
+Use `/version` instead. It exists only in the application, and its body names the PR:
+
+```bash
+curl -s http://pr-<N>.localtest.me:8080/version
+# {"pr_number":"<N>","git_sha":"<head sha>", ...}
+```
+
+A 404 from nginx there means nothing is bound to that hostname; a JSON body naming a
+*different* PR means DNS or the Ingress host is wrong. This distinction matters most in
+scripts — a smoke test written against `/healthz` reports success forever.
+
 ### Pods are stuck in ImagePullBackOff
 
 Check which tag is actually requested:

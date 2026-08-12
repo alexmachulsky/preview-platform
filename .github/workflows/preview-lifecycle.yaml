@@ -17,6 +17,10 @@ name: preview-lifecycle
 # Withdrawing the PR from the generator's result set is the only way to remove
 # a preview that the platform's own controller agrees with.
 
+# Only the `pull_request` trigger runs the version of this file on the PR
+# branch. GitHub takes `issue_comment`, `schedule` and `workflow_dispatch` from
+# the default branch, so changes to those three jobs cannot be tested on a
+# branch — they take effect on merge.
 on:
   pull_request:
     types: [opened, reopened]
@@ -68,17 +72,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          # `gh pr edit --add-label` fails on a label the repository has never
-          # seen, so a fresh clone of this repo would break on its first PR.
-          if ! gh label list --repo "$REPO" --json name --jq '.[].name' \
-               | grep -qxF "$PREVIEW_LABEL"; then
-            gh label create "$PREVIEW_LABEL" --repo "$REPO" \
-              --color 0E8A16 \
-              --description "Argo CD keeps an ephemeral environment for this PR"
-            echo "Created the $PREVIEW_LABEL label"
+          # Adding a label the repository has never seen fails, so a fresh fork
+          # of this repo would break on its first pull request.
+          #
+          # REST rather than `gh label`, which only exists from gh 2.10. Every
+          # call in this workflow is a plain API call for that reason: the
+          # runner's gh version is not something this repo controls, and a
+          # workflow that silently depends on it breaks on someone else's
+          # machine, not here.
+          # Captured first rather than piped straight into grep. `grep -q` exits
+          # on the first match, which SIGPIPEs the still-writing `gh --paginate`;
+          # under `set -o pipefail` the pipeline then reports failure exactly
+          # when the label *is* present, the create call 422s, and set -e takes
+          # the job down. It needs enough labels to overflow the 64KB pipe
+          # buffer before grep quits, so a small repository would never see it —
+          # which is the argument for spending one variable on it rather than
+          # leaving a failure that appears only on somebody else's repo.
+          EXISTING=$(gh api "repos/${REPO}/labels" --paginate --jq '.[].name')
+
+          if ! grep -qxF "$PREVIEW_LABEL" <<< "$EXISTING"; then
+            gh api -X POST "repos/${REPO}/labels" \
+              -f "name=$PREVIEW_LABEL" \
+              -f color=0E8A16 \
+              -f description="Argo CD keeps an ephemeral environment for this PR" \
+              --jq '.name + " label created"'
           fi
 
-          gh pr edit "$PR" --repo "$REPO" --add-label "$PREVIEW_LABEL"
+          # REST, not `gh pr edit --add-label`. That command resolves the PR
+          # through GraphQL and asks for projectCards along the way, a field
+          # Projects (classic) deprecated — so on older gh it fails outright
+          # with a deprecation error and never reaches the label. This endpoint
+          # has no such dependency and behaves the same on every gh version.
+          printf '{"labels":["%s"]}' "$PREVIEW_LABEL" \
+            | gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
+                --input - --jq '[.[].name] | join(", ")'
           echo "Labelled PR #$PR — Argo CD will pick it up on its next poll"
 
   # ── Bring a reaped preview back ────────────────────────────────────────────
@@ -112,7 +139,9 @@ jobs:
               ;;
           esac
 
-          gh pr edit "$PR" --repo "$REPO" --add-label "$PREVIEW_LABEL"
+          printf '{"labels":["%s"]}' "$PREVIEW_LABEL" \
+            | gh api -X POST "repos/${REPO}/issues/${PR}/labels" \
+                --input - --jq '[.[].name] | join(", ")'
           echo "Restored the preview for PR #$PR"
 
   # ── Reclaim environments nobody is using ───────────────────────────────────
@@ -186,8 +215,10 @@ jobs:
             # then failed, the environment would vanish with no explanation on
             # the PR. The comment also bumps updated_at, so doing it second would
             # make an already-reaped PR look active on the next run.
-            gh pr comment "$NUMBER" --repo "$REPO" --body "$BODY"
-            gh pr edit "$NUMBER" --repo "$REPO" --remove-label "$PREVIEW_LABEL"
+            gh api -X POST "repos/${REPO}/issues/${NUMBER}/comments" \
+              -f body="$BODY" --jq '.html_url'
+            gh api -X DELETE "repos/${REPO}/issues/${NUMBER}/labels/${PREVIEW_LABEL}" \
+              --jq '[.[].name] | join(", ") | "remaining labels: " + .'
             REAPED=$(( REAPED + 1 ))
           done <<< "$OPEN"
 
