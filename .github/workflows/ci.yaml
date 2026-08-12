@@ -72,10 +72,21 @@ jobs:
   # ── Build and publish images ───────────────────────────────────────────────
   build:
     needs: test
+    # A fork PR gets a read-only GITHUB_TOKEN and no OIDC identity, so pushing
+    # and signing cannot work. Skipping is honest; letting it run produces a
+    # credential error that reads like a broken pipeline instead of a policy.
+    # Fork PRs get no preview either (see preview-lifecycle.yaml), so nothing
+    # downstream depends on an image existing here.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      # Keyless signing: cosign exchanges this for a short-lived Sigstore
+      # certificate. No private key exists to store or leak.
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +121,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.service }}
+      # ── Scan before publishing, not after ────────────────────────────────
+      # Deliberately built into the local daemon first. Scanning a pushed image
+      # is easier, but by then the tag exists — and Argo CD's only criterion
+      # for deploying a preview is that the tag resolves. A red pipeline would
+      # not stop it. Nothing vulnerable should reach the registry at all.
+      #
+      # The push below re-runs the same build; every layer is a cache hit, so
+      # it costs seconds rather than a second build.
+      - name: Build ${{ matrix.service }} for scanning
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/${{ matrix.service }}
+          load: true
+          push: false
+          tags: preview-platform/${{ matrix.service }}:scan
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+
+      # --ignore-unfixed on purpose. A base-image CVE with no released fix is
+      # not actionable here, and a gate that fails on those trains everyone to
+      # ignore it. This fails only on things that can actually be fixed today.
+      - name: Fail on fixable HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: preview-platform/${{ matrix.service }}:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Generate an SBOM
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: preview-platform/${{ matrix.service }}:scan
+          scan-type: image
+          format: spdx-json
+          output: sbom.spdx.json
+          # Reporting, not gating — the gate above already ran.
+          exit-code: "0"
+
+      - name: Push ${{ matrix.service }}
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: apps/${{ matrix.service }}
@@ -123,6 +176,36 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           provenance: false
+
+      - uses: sigstore/cosign-installer@v4.1.2
+
+      # Everything below addresses the digest, never a tag. A tag is a mutable
+      # pointer: signing one says "whatever this name resolves to right now is
+      # fine", which is exactly the claim an attacker wants to be able to move.
+      - name: Sign the image and attest its SBOM
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
+          echo "Signed ${IMAGE}@${DIGEST}"
+
+      # A signing step that silently produced nothing verifiable would be worse
+      # than no signing at all, because the badge would still be there.
+      - name: Verify the signature we just made
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cosign verify \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp "^https://github.com/${REPO}/.github/workflows/ci.yaml@" \
+            "${IMAGE}@${DIGEST}" > /dev/null
+          echo "Signature verifies for ${IMAGE}@${DIGEST}"
 
   # ── Tell the reviewer where to look ────────────────────────────────────────
   comment:

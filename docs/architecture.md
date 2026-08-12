@@ -125,6 +125,47 @@ that code can do inside its own namespace, it can do. The boundary is the namesp
 which is why fork pull requests do not get an environment without a maintainer
 labelling them.
 
+## Supply chain
+
+Every image CI publishes is scanned before it is pushed and signed after.
+
+**Scanned before, not after.** The image is built into the runner's local daemon,
+scanned, and only then pushed — a second build that is entirely cache hits. Scanning
+the pushed image would be simpler and wrong: Argo CD's only criterion for deploying a
+preview is that the tag resolves, so a red pipeline would not stop a vulnerable image
+that already exists in the registry.
+
+The gate fails on HIGH and CRITICAL with `--ignore-unfixed`. A base-image CVE with no
+released fix is not actionable, and a gate that fails on those teaches everyone to
+ignore it.
+
+**Signed by digest.** Keyless Cosign — the workflow exchanges its OIDC token for a
+short-lived Sigstore certificate, so there is no private key to store or leak. Signing
+addresses `image@sha256:…`, never a tag: a tag is a mutable pointer, and signing one
+asserts that whatever the name resolves to *right now* is trustworthy, which is exactly
+the claim worth attacking. An SBOM is attached as an attestation on the same digest.
+
+CI then verifies the signature it just produced. A signing step that silently produced
+nothing verifiable is worse than no signing, because the badge is still there.
+
+Verify one yourself:
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/alexmachulsky/preview-platform/.github/workflows/ci.yaml@' \
+  ghcr.io/alexmachulsky/preview-platform/api@sha256:<digest>
+```
+
+**Nothing enforces this yet.** The cluster will happily run an unsigned image; the
+signature is produced and verifiable, not required at admission. Closing that gap is
+what Kyverno is for, and it is still on the roadmap.
+
+**Runtime images carry no build tooling.** The venv's pip, setuptools and wheel are
+removed before it is copied into the runtime stage. Nothing imports them at runtime,
+and they were the source of both fixable CVEs the images had — reported against
+packages pip *vendors*, never against anything this code imports.
+
 ## Components
 
 | Layer | Choice | Notes |
