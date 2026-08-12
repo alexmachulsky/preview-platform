@@ -166,7 +166,8 @@ jobs:
 
           <sub>The cluster is local, so these URLs resolve only on the machine
           running it — \`*.localtest.me\` points at 127.0.0.1. Closing this PR
-          deletes the environment.</sub>
+          deletes the environment, and so does three days without activity —
+          comment \`/preview\` to bring it back.</sub>
           EOF
           )
 

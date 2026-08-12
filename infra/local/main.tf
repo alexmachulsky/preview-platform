@@ -20,6 +20,7 @@ module "platform" {
   git_repo_url    = var.git_repo_url
   github_token    = var.github_token
   github_username = var.github_username
+  preview_label   = var.preview_label
 
   # The bootstrap chart lives in the repository, not in the module, so the
   # ApplicationSet is reviewable next to everything else it deploys.

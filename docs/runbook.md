@@ -19,6 +19,37 @@ kubectl -n preview-pr-<N> get pods
 
 ## No preview appears at all
 
+### The pull request has no `preview` label
+
+The most likely cause, and the one that looks least like a fault: the generator lists
+only labelled PRs, so an unlabelled one is invisible to it. Argo CD is working exactly as
+configured and reports nothing wrong.
+
+```bash
+gh pr view <N> --json labels --jq '.labels[].name'
+```
+
+Add it back with a `/preview` comment on the PR, or directly:
+
+```bash
+gh pr edit <N> --add-label preview
+```
+
+Three things remove or withhold the label:
+
+- **The nightly reaper** — no activity for 3 days. It always comments on the PR before
+  unlabelling, so check the PR's timeline; if there is no such comment, this was not it.
+- **A fork PR** — never labelled automatically, by design. Label it by hand after
+  reviewing the diff.
+- **The `label` job failed** on open. `gh run list --workflow preview-lifecycle.yaml`.
+
+To confirm the filter itself is what the cluster is running:
+
+```bash
+kubectl -n argocd get applicationset preview-environments \
+  -o jsonpath='{.spec.generators[0].pullRequest.github.labels}'
+```
+
 ### The generator is rate-limited
 
 ```
@@ -54,6 +85,77 @@ convention for token auth) where the API owner belongs. Owner and repo are deriv
 ---
 
 ## The preview exists but the URL 404s
+
+### First: do not health-check a preview with `/healthz`
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' http://pr-99.localtest.me:8080/healthz   # 200
+kubectl get ns preview-pr-99                                                   # NotFound
+```
+
+Both of those are correct. ingress-nginx's *default* server — the one that answers a
+hostname matching no Ingress rule — serves its own `/healthz` with a 200 on port 80. The
+path collides with the api's liveness endpoint, so probing it through the ingress passes
+for a preview that was never created, one whose pods are all crashing, and one that is
+perfectly healthy, indistinguishably.
+
+Use `/version` instead. It exists only in the application, and its body names the PR:
+
+```bash
+curl -s http://pr-<N>.localtest.me:8080/version
+# {"pr_number":"<N>","git_sha":"<head sha>", ...}
+```
+
+A 404 from nginx there means nothing is bound to that hostname; a JSON body naming a
+*different* PR means DNS or the Ingress host is wrong. This distinction matters most in
+scripts — a smoke test written against `/healthz` reports success forever.
+
+### The api cannot reach its database after a platform change
+
+```
+psql: could not connect to server: Connection refused
+```
+
+Two causes, and they look identical from the pod.
+
+**The credential rotated but the pod did not.** Changing `database.passwordSeed`
+rewrites the Secret; Postgres keeps whatever password it was initialised with. The
+`checksum/db-credentials` annotation on api, worker and postgres exists to force the
+rollout — if a pod predates the Secret, it is running with the old DSN:
+
+```bash
+kubectl -n preview-pr-<N> get pod -l app.kubernetes.io/component=api \
+  -o jsonpath='{.items[0].metadata.annotations.checksum/db-credentials}{"\n"}'
+kubectl -n preview-pr-<N> get deploy -o jsonpath='{.items[0].spec.template.metadata.annotations}'
+```
+
+Different values mean the rollout has not landed yet. Wait, or
+`kubectl rollout restart`.
+
+**A NetworkPolicy is blocking it.** Confirm the policies are what you expect before
+suspecting the application:
+
+```bash
+kubectl -n preview-pr-<N> get netpol
+```
+
+Four are expected: `default-deny`, `allow-api`, `allow-worker-metrics`,
+`allow-postgres`. A connection from *outside* the namespace being refused is the
+intended behaviour, not a fault — see the isolation model in the architecture doc. To
+verify from inside, which is allowed:
+
+```bash
+kubectl -n preview-pr-<N> exec deploy/<release>-preview-app-api -- \
+  python -c "import os,psycopg; psycopg.connect(os.environ['DATABASE_URL'].replace('+psycopg','')); print('ok')"
+```
+
+If a preview genuinely needs to call a third-party API, that is egress, and it is
+denied by default: set `networkPolicy.allowExternalEgress: true`, accepting that it
+re-opens the rest of the cluster too.
+
+Note that these policies do nothing on a CNI that does not enforce NetworkPolicy. They
+apply cleanly either way, so confirm enforcement rather than assuming it — k3s enforces
+by default.
 
 ### Pods are stuck in ImagePullBackOff
 

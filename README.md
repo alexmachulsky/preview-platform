@@ -17,6 +17,11 @@ existing, and Argo CD reconciles the cluster to match.
   PR closed → Application pruned → namespace deleted
 ```
 
+Environments are gated on a `preview` label, added when a PR opens and removed again
+after three idle days. Reclaiming an abandoned preview and closing a pull request are
+therefore the same operation, and neither one deletes anything directly — see
+[the lifecycle](docs/architecture.md#lifecycle-the-label-is-the-switch).
+
 ## Stack
 
 | Layer | Choice |
@@ -82,6 +87,9 @@ Run `make help` for the full target list.
 
 Deliberately out of scope for v1, in rough priority order: Trivy scanning and Cosign
 signing in CI, Kyverno admission policy, external-secrets for the database credential,
-a TTL reaper for environments whose pull request was abandoned rather than closed, and
-`infra/aws` — VPC, EKS, ECR and a real wildcard domain, reusing the same platform
+and `infra/aws` — VPC, EKS, ECR and a real wildcard domain, reusing the same platform
 module.
+
+Reclaiming abandoned previews was on this list and is now built, as label lifecycle
+rather than the TTL reaper originally sketched — a reaper that deleted namespaces would
+have spent its life losing to `selfHeal`.

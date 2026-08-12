@@ -214,6 +214,21 @@ variable "preview_chart_path" {
   default     = "charts/preview-app"
 }
 
+variable "preview_label" {
+  description = <<-EOT
+    Pull request label that entitles a PR to an environment. The generator only
+    lists PRs carrying it, which makes the label the platform's on/off switch:
+    .github/workflows/preview-lifecycle.yaml adds it on open and removes it
+    after a few idle days, and Argo CD tears the environment down for the same
+    reason it would if the PR had closed.
+
+    Set to "" to give every open PR an environment, which is fine on a quiet
+    repository but has no way to reclaim capacity from an abandoned branch.
+  EOT
+  type        = string
+  default     = "preview"
+}
+
 variable "preview_requeue_seconds" {
   description = "How often the pullRequest generator re-lists open PRs. Anonymous GitHub polling allows only 60 requests/hour, so raise this well above 60 when no token is configured."
   type        = number
