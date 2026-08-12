@@ -37,6 +37,18 @@ locals {
   # configured interval is used as-is.
   preview_requeue = var.github_token == "" ? max(var.preview_requeue_seconds, 120) : var.preview_requeue_seconds
 
+  # Domains that can only ever answer on this machine. Used to decide whether
+  # the convenience defaults below are acceptable. Deliberately an allowlist:
+  # inferring from the string would call any unknown domain safe.
+  base_domain_is_loopback = (
+    var.base_domain == "localtest.me" ||
+    var.base_domain == "localhost" ||
+    endswith(var.base_domain, ".localtest.me") ||
+    endswith(var.base_domain, ".localhost") ||
+    startswith(var.base_domain, "127.0.0.1") ||
+    var.base_domain == "vcap.me"
+  )
+
   repo_url_clean = trimsuffix(var.git_repo_url, ".git")
   repo_slug      = regex("github\\.com[:/]([^/]+)/([^/]+)/?$", local.repo_url_clean)
   github_owner   = local.repo_slug[0]
@@ -155,6 +167,26 @@ resource "helm_release" "kube_prometheus_stack" {
   chart      = "kube-prometheus-stack"
   version    = var.kube_prometheus_stack_chart_version
   namespace  = kubernetes_namespace_v1.monitoring.metadata[0].name
+
+  # Grafana ships with anonymous Viewer access and admin/admin, which is a
+  # reasonable trade on a cluster only reachable from 127.0.0.1 and a bad one
+  # anywhere else. Nothing about `make bootstrap` distinguishes the two, so the
+  # defaults would follow this module to a real domain unnoticed. Fail the
+  # apply instead of relying on whoever runs it to remember.
+  lifecycle {
+    precondition {
+      condition = local.base_domain_is_loopback || (
+        !var.grafana_anonymous_access && var.grafana_admin_password != "admin"
+      )
+      error_message = <<-EOT
+        base_domain "${var.base_domain}" does not resolve to loopback, so the
+        local-convenience Grafana defaults are not safe here.
+
+        Set grafana_anonymous_access = false and a real grafana_admin_password,
+        or keep a loopback base_domain (localtest.me, *.localhost, 127.0.0.1).
+      EOT
+    }
+  }
 
   create_namespace = false
   wait             = true

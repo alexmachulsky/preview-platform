@@ -37,6 +37,7 @@ discover a month later.
          ├── api             Deployment · Service · Ingress     wave  3
          ├── worker          Deployment
          ├── ServiceMonitor  ×2, scraped by Prometheus
+         ├── NetworkPolicy   ×4, deny-by-default          wave -8
          └── ResourceQuota + LimitRange
 
   pull request closes → generator drops the entry → Application pruned → namespace gone
@@ -77,6 +78,44 @@ reviewed decision rather than a default.
 
 Setting `preview_label = ""` disables the whole mechanism and gives every open PR an
 environment — fine on a quiet repository, but with no way to reclaim capacity.
+
+## Isolation model
+
+A preview runs code from a pull request next to every other preview. Two things
+keep them apart, and each was added because the other is not sufficient on its own.
+
+**Network.** Every preview namespace denies ingress and egress by default
+(`templates/networkpolicy.yaml`), opening exactly four paths: ingress-nginx to the
+api, monitoring to api and worker, and same-namespace pods to Postgres. Egress is DNS
+plus the namespace itself — the workloads call nothing else, and images are pulled by
+the kubelet rather than by the pod.
+
+Without this, namespaces are only an organisational boundary. Any pod in the cluster
+can dial any Service, so a preview's database is reachable from every other preview.
+
+**Credential.** Each preview derives its Postgres password from
+`sha256(namespace / release / seed)`. Determinism is forced: Argo CD's repo-server
+renders with no cluster access, so anything random would mint a new password on every
+sync while the running database still expected the old one.
+
+Deterministic is fine; deterministic *from published inputs* is not. Namespace and
+release are both `preview-pr-<N>`, so a seed committed to a public repo makes every
+password computable by anyone. Terraform therefore generates the seed and passes it
+through the ApplicationSet, so it exists only inside the cluster. The chart's committed
+seed remains as the `helm install` fallback.
+
+This matters more than it looks: `POSTGRES_USER` is a superuser in the official image,
+so reaching the database is not merely read access — it is `COPY ... FROM PROGRAM`
+inside the database container.
+
+Rotating the seed only works because api, worker and postgres carry a
+`checksum/db-credentials` annotation. Without it the Secret changes and nothing
+restarts, leaving Postgres on the password it was initialised with.
+
+**What is deliberately not defended.** Previews trust the pull request's code. Anything
+that code can do inside its own namespace, it can do. The boundary is the namespace,
+which is why fork pull requests do not get an environment without a maintainer
+labelling them.
 
 ## Components
 

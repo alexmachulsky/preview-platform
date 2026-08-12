@@ -110,6 +110,53 @@ A 404 from nginx there means nothing is bound to that hostname; a JSON body nami
 *different* PR means DNS or the Ingress host is wrong. This distinction matters most in
 scripts — a smoke test written against `/healthz` reports success forever.
 
+### The api cannot reach its database after a platform change
+
+```
+psql: could not connect to server: Connection refused
+```
+
+Two causes, and they look identical from the pod.
+
+**The credential rotated but the pod did not.** Changing `database.passwordSeed`
+rewrites the Secret; Postgres keeps whatever password it was initialised with. The
+`checksum/db-credentials` annotation on api, worker and postgres exists to force the
+rollout — if a pod predates the Secret, it is running with the old DSN:
+
+```bash
+kubectl -n preview-pr-<N> get pod -l app.kubernetes.io/component=api \
+  -o jsonpath='{.items[0].metadata.annotations.checksum/db-credentials}{"\n"}'
+kubectl -n preview-pr-<N> get deploy -o jsonpath='{.items[0].spec.template.metadata.annotations}'
+```
+
+Different values mean the rollout has not landed yet. Wait, or
+`kubectl rollout restart`.
+
+**A NetworkPolicy is blocking it.** Confirm the policies are what you expect before
+suspecting the application:
+
+```bash
+kubectl -n preview-pr-<N> get netpol
+```
+
+Four are expected: `default-deny`, `allow-api`, `allow-worker-metrics`,
+`allow-postgres`. A connection from *outside* the namespace being refused is the
+intended behaviour, not a fault — see the isolation model in the architecture doc. To
+verify from inside, which is allowed:
+
+```bash
+kubectl -n preview-pr-<N> exec deploy/<release>-preview-app-api -- \
+  python -c "import os,psycopg; psycopg.connect(os.environ['DATABASE_URL'].replace('+psycopg','')); print('ok')"
+```
+
+If a preview genuinely needs to call a third-party API, that is egress, and it is
+denied by default: set `networkPolicy.allowExternalEgress: true`, accepting that it
+re-opens the rest of the cluster too.
+
+Note that these policies do nothing on a CNI that does not enforce NetworkPolicy. They
+apply cleanly either way, so confirm enforcement rather than assuming it — k3s enforces
+by default.
+
 ### Pods are stuck in ImagePullBackOff
 
 Check which tag is actually requested:

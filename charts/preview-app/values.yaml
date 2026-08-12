@@ -204,8 +204,22 @@ database:
   # release name. The result is deterministic on purpose: Argo CD's repo-server
   # renders without cluster access, so a `lookup`-based scheme would mint a new
   # password on every sync while the running database still expected the old
-  # one. Change this to rotate every preview's password at once. See the
-  # preview-app.dbPassword helper for why this is fine here and not in prod.
+  # one.
+  #
+  # THIS DEFAULT IS PUBLIC. Namespace and release are both "preview-pr-<N>", so
+  # anyone reading this repository can compute any preview's password from it:
+  #
+  #   printf 'preview-pr-2/preview-pr-2/preview-app' | sha256sum | cut -c1-24
+  #
+  # Under GitOps the platform overrides it with a random per-cluster value that
+  # never leaves the cluster (see infra/modules/platform, random_password
+  # .preview_db_seed). This value is only the fallback for a plain
+  # `helm install`, where it is one of two defences rather than the only one —
+  # templates/networkpolicy.yaml is what stops anything outside the namespace
+  # from reaching the database in the first place.
+  #
+  # Changing it rotates every preview's password; the checksum/db-credentials
+  # annotation on the pods is what makes that rotation actually take effect.
   passwordSeed: preview-app
 
 # ── Network isolation ─────────────────────────────────────────────────────────
