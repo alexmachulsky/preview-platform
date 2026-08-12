@@ -177,7 +177,17 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           provenance: false
 
+      # cosign is pinned, not left to the installer's default. That default
+      # currently lags at v3.0.6, which does not have the
+      # --registry-referrers-mode flag the signing step depends on — CI failed
+      # with "unknown flag" until this was pinned. Signing tooling is also
+      # exactly the kind of thing that should not change version silently.
       - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Record the cosign version actually in use
+        run: cosign version --json | python3 -c "import sys,json;print('cosign', json.load(sys.stdin)['gitVersion'])"
 
       # Everything below addresses the digest, never a tag. A tag is a mutable
       # pointer: signing one says "whatever this name resolves to right now is
@@ -203,8 +213,15 @@ jobs:
           # the enforcer on its stable path. Revisit when Kyverno's OCI 1.1
           # support is no longer experimental.
           cosign sign --yes --registry-referrers-mode=legacy "${IMAGE}@${DIGEST}"
-          cosign attest --yes --registry-referrers-mode=legacy \
-            --type spdxjson --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
+
+          # No --registry-referrers-mode here, and that asymmetry is deliberate:
+          # `cosign attest` does not accept the flag (v3.1.3), so passing it
+          # fails with "unknown flag". It does not matter — the admission policy
+          # verifies the signature, not the SBOM attestation, so only the
+          # signature has to land where Kyverno looks. The attestation stays
+          # verifiable with `cosign verify-attestation` either way.
+          cosign attest --yes --type spdxjson \
+            --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
           echo "Signed ${IMAGE}@${DIGEST}"
 
       # A signing step that silently produced nothing verifiable would be worse
