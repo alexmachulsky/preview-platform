@@ -188,8 +188,23 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          cosign sign --yes "${IMAGE}@${DIGEST}"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
+
+          # --registry-referrers-mode=legacy is load-bearing, not tidiness.
+          #
+          # cosign v3 defaults to writing signatures as OCI 1.1 referrers.
+          # Kyverno 1.18 looks for the legacy `sha256-<digest>.sig` tag unless
+          # its `cosignOCI11` flag is set, and that flag is documented as
+          # experimental. So the default combination produces a signature that
+          # verifies perfectly with cosign and is invisible to the admission
+          # controller meant to enforce it — the policy rejects its own CI's
+          # images with "no signatures found". Observed exactly that.
+          #
+          # Writing the legacy layout keeps the producer on current cosign and
+          # the enforcer on its stable path. Revisit when Kyverno's OCI 1.1
+          # support is no longer experimental.
+          cosign sign --yes --registry-referrers-mode=legacy "${IMAGE}@${DIGEST}"
+          cosign attest --yes --registry-referrers-mode=legacy \
+            --type spdxjson --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
           echo "Signed ${IMAGE}@${DIGEST}"
 
       # A signing step that silently produced nothing verifiable would be worse

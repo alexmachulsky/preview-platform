@@ -25,6 +25,9 @@ module "platform" {
   # The bootstrap chart lives in the repository, not in the module, so the
   # ApplicationSet is reviewable next to everything else it deploys.
   bootstrap_chart_path = "${path.root}/../../platform/argocd"
+  # Same reasoning: the ClusterPolicy lives in the repository next to what it
+  # governs, not buried inside the module.
+  kyverno_policy_chart_path = "${path.root}/../../platform/kyverno"
 
   grafana_admin_password = var.grafana_admin_password
   prometheus_retention   = var.prometheus_retention

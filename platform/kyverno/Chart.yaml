@@ -1,0 +1,14 @@
+apiVersion: v2
+name: preview-policies
+description: |
+  Admission policy requiring every preview image to carry a Cosign signature
+  from this repository's CI workflow.
+
+  A separate release from kyverno itself: a ClusterPolicy is an instance of a
+  CRD that release installs, and Helm validates every manifest against the API
+  server before installing any of it. Terraform orders this after kyverno.
+type: application
+# Bump on every change. helm_release points at this chart by local path and the
+# provider does not diff on file contents — see platform/argocd/Chart.yaml.
+version: 0.1.0
+appVersion: "0.1.0"

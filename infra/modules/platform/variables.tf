@@ -214,6 +214,69 @@ variable "preview_chart_path" {
   default     = "charts/preview-app"
 }
 
+variable "image_registry" {
+  description = "Registry the preview images are published to. Used to scope which images the signature policy applies to."
+  type        = string
+  default     = "ghcr.io"
+}
+
+variable "kyverno_policy_chart_path" {
+  description = "Filesystem path to the preview-policies chart (platform/kyverno). A separate release because its ClusterPolicy is an instance of a CRD the kyverno release installs."
+  type        = string
+  default     = ""
+}
+
+variable "enable_kyverno" {
+  description = "Install Kyverno and the policy that requires preview images to carry a valid Cosign signature."
+  type        = bool
+  default     = true
+}
+
+variable "kyverno_chart_version" {
+  description = "Version of the kyverno/kyverno Helm chart."
+  type        = string
+  default     = "3.8.2"
+}
+
+variable "kyverno_namespace" {
+  description = "Namespace Kyverno runs in."
+  type        = string
+  default     = "kyverno"
+}
+
+variable "image_verification_action" {
+  description = <<-EOT
+    What Kyverno does when a preview image has no valid signature. "Enforce"
+    rejects the Pod; "Audit" only records a PolicyReport.
+
+    Enforce is the point of the policy, but it means an unreachable Sigstore or
+    a Kyverno outage stops previews from starting. Audit is the honest setting
+    while the policy is being introduced — it shows what *would* have been
+    blocked without anyone discovering it at 2am.
+  EOT
+  type        = string
+  default     = "Enforce"
+
+  validation {
+    condition     = contains(["Enforce", "Audit"], var.image_verification_action)
+    error_message = "image_verification_action must be Enforce or Audit."
+  }
+}
+
+variable "signing_identity_regexp" {
+  description = <<-EOT
+    Regexp the Sigstore certificate's subject must match — the workflow allowed
+    to sign images this cluster will run. Defaults to the ci.yaml workflow of
+    the repository in git_repo_url.
+
+    This, not the signature alone, is the actual control: any GitHub Actions
+    workflow anywhere can obtain a valid Sigstore certificate, so a policy that
+    checks only "is it signed" accepts images signed by a stranger's repo.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "preview_label" {
   description = <<-EOT
     Pull request label that entitles a PR to an environment. The generator only

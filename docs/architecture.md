@@ -157,9 +157,16 @@ cosign verify \
   ghcr.io/alexmachulsky/preview-platform/api@sha256:<digest>
 ```
 
-**Nothing enforces this yet.** The cluster will happily run an unsigned image; the
-signature is produced and verifiable, not required at admission. Closing that gap is
-what Kyverno is for, and it is still on the roadmap.
+**Enforced at admission.** A Kyverno `ClusterPolicy` requires a valid signature before
+a Pod may run in a `preview-*` namespace, scoped to images from this repository — the
+Postgres image alongside it is upstream and carries no signature of ours. The policy
+pins the certificate *subject*, not merely the presence of a signature: keyless signing
+is available to any GitHub Actions run anywhere, so "is it signed" alone would accept an
+image signed by a stranger's repository.
+
+It fails closed. If Kyverno is down or Sigstore is unreachable, matching pods do not
+start. That is the correct posture for a control meant to be unbypassable and a real
+operational cost, bounded by the narrow match: preview namespaces, our images only.
 
 **Runtime images carry no build tooling.** The venv's pip, setuptools and wheel are
 removed before it is copied into the runtime stage. Nothing imports them at runtime,

@@ -1,0 +1,20 @@
+# -- Namespaces the policy applies to. Matches the ApplicationSet's pattern.
+previewNamespacePattern: "preview-*"
+
+# -- Images the policy checks. Everything else in a preview namespace — the
+# Postgres image, for one — is deliberately out of scope: it is not built here
+# and carries no signature of ours.
+imageReference: "ghcr.io/alexmachulsky/preview-platform/*"
+
+# -- Enforce rejects an unsigned Pod; Audit only records a PolicyReport.
+failureAction: Enforce
+
+keyless:
+  issuer: "https://token.actions.githubusercontent.com"
+  # -- Certificate subject that may sign. A trailing * allows any git ref.
+  subject: "https://github.com/alexmachulsky/preview-platform/.github/workflows/ci.yaml@*"
+
+# -- Rewrite the image tag to the digest that was verified. Without this the
+# kubelet re-resolves the tag when it pulls, and a tag can move between the
+# admission check and the pull — verifying one image and running another.
+mutateDigest: true

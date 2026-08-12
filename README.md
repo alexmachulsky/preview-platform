@@ -85,14 +85,13 @@ Run `make help` for the full target list.
 
 ## Roadmap
 
-Deliberately out of scope for v1, in rough priority order: Kyverno admission policy to
-*enforce* the signatures CI now produces, external-secrets for the database credential,
-and `infra/aws` — VPC, EKS, ECR and a real wildcard domain, reusing the same platform
-module.
+Deliberately out of scope for v1, in rough priority order: external-secrets for the
+database credential, and `infra/aws` — VPC, EKS, ECR and a real wildcard domain, reusing
+the same platform module.
 
 Two items have come off this list. Reclaiming abandoned previews is built, as label
 lifecycle rather than the TTL reaper originally sketched — a reaper that deleted
 namespaces would have spent its life losing to `selfHeal`. Supply-chain scanning and
 signing is built too: CI refuses to publish an image with a fixable HIGH or CRITICAL
-vulnerability, and signs what it does publish. Nothing yet *requires* a signature at
-admission time, which is what Kyverno would add.
+vulnerability, signs what it does publish, and Kyverno refuses to run a preview image
+that cannot prove it was signed by this repository's CI.

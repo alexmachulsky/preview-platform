@@ -1,0 +1,86 @@
+{{- /*
+Every preview image must carry a Cosign signature from this repository's CI.
+
+CI already signs and can already prove it. Until this policy existed, though,
+nothing *required* it — the cluster would run an unsigned image just as happily,
+which makes a signature a claim rather than a control.
+
+WHY failureAction SITS ON THE RULE
+`spec.validationFailureAction` also exists and is the one most examples use. It
+is deprecated in current Kyverno, and — this is the trap — it defaults to
+`Audit`. A policy written that way looks enforcing, reports Enforce in its own
+spec, and silently admits unsigned images forever. The rule-level field below is
+the one that takes effect. Verified against the installed CRD schema, not from
+an example.
+
+WHY THE SUBJECT IS PINNED
+Keyless signing is available to any GitHub Actions run on earth. "Has a valid
+Sigstore signature" therefore proves only that somebody, somewhere, signed it.
+The control is the identity: this workflow, in this repository. Without the
+subject match the policy would cheerfully accept an image signed by an
+attacker's own public repo.
+*/ -}}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-preview-images
+  labels:
+    app.kubernetes.io/part-of: preview-platform
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    policies.kyverno.io/title: Verify preview image signatures
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Requires images published by this repository's CI to carry a Cosign
+      signature from its ci.yaml workflow before they may run in a preview
+      namespace.
+spec:
+  # Admission only. Background scanning would re-evaluate existing pods on every
+  # policy change, and a signature check means a registry round trip per image —
+  # pointless repeated work for pods whose images were already verified on the
+  # way in.
+  background: false
+
+  # Fail closed. If Kyverno is down or Sigstore is unreachable, pods that this
+  # policy matches do not start. That is the correct posture for a control whose
+  # whole purpose is to be unbypassable, and it is a real operational cost: it
+  # puts the admission controller in the critical path of every preview. The
+  # blast radius is bounded by the match block below — only preview namespaces,
+  # and within them only this repository's own images.
+  failurePolicy: Fail
+
+  # A registry round trip and a Rekor lookup do not always finish in the default
+  # 10s on a cold cache.
+  webhookTimeoutSeconds: 30
+
+  rules:
+    - name: require-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - {{ .Values.previewNamespacePattern | quote }}
+      verifyImages:
+        # Scoped to images this repository builds. Everything else in a preview
+        # namespace — Postgres, most obviously — is upstream and carries no
+        # signature of ours; demanding one would block the database and teach
+        # everyone to turn the policy off.
+        - imageReferences:
+            - {{ .Values.imageReference | quote }}
+          failureAction: {{ .Values.failureAction }}
+          # Rewrite the verified tag to the digest that was actually checked.
+          # Otherwise the kubelet re-resolves the tag at pull time, and a tag
+          # can move in between — verifying one image and running another.
+          mutateDigest: {{ .Values.mutateDigest }}
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    issuer: {{ .Values.keyless.issuer | quote }}
+                    subject: {{ .Values.keyless.subject | quote }}
+                    rekor:
+                      url: https://rekor.sigstore.dev

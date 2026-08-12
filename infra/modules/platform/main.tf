@@ -50,9 +50,15 @@ locals {
   )
 
   repo_url_clean = trimsuffix(var.git_repo_url, ".git")
-  repo_slug      = regex("github\\.com[:/]([^/]+)/([^/]+)/?$", local.repo_url_clean)
-  github_owner   = local.repo_slug[0]
-  github_repo    = local.repo_slug[1]
+
+  repo_slug    = regex("github\\.com[:/]([^/]+)/([^/]+)/?$", local.repo_url_clean)
+  github_owner = local.repo_slug[0]
+  github_repo  = local.repo_slug[1]
+
+  # Which workflow is allowed to sign images this cluster will run. A signature
+  # on its own proves only that *somebody* with a GitHub Actions run signed it —
+  # keyless certificates are free to anyone. Pinning the subject is the control.
+  signing_identity = var.signing_identity_regexp != "" ? var.signing_identity_regexp : "https://github.com/${local.github_owner}/${local.github_repo}/.github/workflows/ci.yaml@*"
 
   # loki-stack names its read/write Service after the release name.
   loki_release_name = "loki"
@@ -81,6 +87,15 @@ resource "kubernetes_namespace_v1" "ingress" {
 resource "kubernetes_namespace_v1" "argocd" {
   metadata {
     name   = var.argocd_namespace
+    labels = local.common_labels
+  }
+}
+
+resource "kubernetes_namespace_v1" "kyverno" {
+  count = var.enable_kyverno ? 1 : 0
+
+  metadata {
+    name   = var.kyverno_namespace
     labels = local.common_labels
   }
 }
@@ -406,6 +421,87 @@ resource "helm_release" "preview_bootstrap" {
     helm_release.argocd,
     kubernetes_secret_v1.github_pr_token,
   ]
+}
+
+###############################################################################
+# Kyverno + the image-verification policy
+#
+# Installed last on purpose. Kyverno registers admission webhooks, and a webhook
+# that exists before its backend is serving turns every subsequent create into a
+# failure — the same trap ingress-nginx's admission webhook sets, which is why
+# that one is installed first with wait = true. Last means the platform is
+# already up before anything can be rejected.
+#
+# The policy is a separate release for the reason preview-bootstrap is: a
+# ClusterPolicy is an instance of a CRD this release installs, and Helm
+# validates every manifest against the API server before installing any of it.
+###############################################################################
+
+resource "helm_release" "kyverno" {
+  count = var.enable_kyverno ? 1 : 0
+
+  name       = "kyverno"
+  repository = "https://kyverno.github.io/kyverno/"
+  chart      = "kyverno"
+  version    = var.kyverno_chart_version
+  namespace  = kubernetes_namespace_v1.kyverno[0].metadata[0].name
+
+  create_namespace = false
+  wait             = true
+  timeout          = var.helm_timeout_seconds
+  cleanup_on_fail  = true
+  max_history      = var.helm_max_history
+
+  values = [
+    yamlencode({
+      # Single replica: this is a laptop cluster. A real one runs three, because
+      # with failurePolicy Fail an admission controller is in the critical path
+      # of every pod creation it matches.
+      admissionController = {
+        replicas = 1
+      }
+      # The reports controller drives PolicyReports, which is how Audit mode is
+      # observed at all. Without it, Audit silently records nothing.
+      reportsController = {
+        enabled = true
+      }
+      backgroundController = { enabled = true }
+      cleanupController    = { enabled = true }
+    })
+  ]
+
+  depends_on = [
+    helm_release.argocd,
+    helm_release.preview_bootstrap,
+  ]
+}
+
+resource "helm_release" "kyverno_policies" {
+  count = var.enable_kyverno ? 1 : 0
+
+  name      = "preview-policies"
+  chart     = var.kyverno_policy_chart_path
+  namespace = kubernetes_namespace_v1.kyverno[0].metadata[0].name
+
+  create_namespace = false
+  wait             = true
+  timeout          = var.helm_timeout_seconds
+  cleanup_on_fail  = true
+  max_history      = var.helm_max_history
+
+  values = [
+    yamlencode({
+      previewNamespacePattern = var.preview_namespace_pattern
+      imageReference          = "${var.image_registry}/${local.github_owner}/${local.github_repo}/*"
+      failureAction           = var.image_verification_action
+      keyless = {
+        issuer  = "https://token.actions.githubusercontent.com"
+        subject = local.signing_identity
+      }
+    })
+  ]
+
+  depends_on = [helm_release.kyverno]
 }
 
 ###############################################################################

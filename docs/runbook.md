@@ -157,6 +157,37 @@ Note that these policies do nothing on a CNI that does not enforce NetworkPolicy
 apply cleanly either way, so confirm enforcement rather than assuming it — k3s enforces
 by default.
 
+### Kyverno rejects an image CI just signed
+
+```
+resource Pod/preview-pr-<N>/... was blocked due to the following policies
+verify-preview-images:
+  require-cosign-signature: 'failed to verify image ...: no signatures found'
+```
+
+The confusing part is that `cosign verify` on the same digest succeeds from a
+laptop. Both are right — they are looking in different places.
+
+cosign v3 defaults to writing signatures as OCI 1.1 referrers. Kyverno reads the
+legacy `sha256-<digest>.sig` tag unless `cosignOCI11` is set, and that flag is
+experimental. The result is a signature that is real, verifiable and invisible to
+the thing enforcing it.
+
+Check where the signature actually landed:
+
+```bash
+cosign tree ghcr.io/<owner>/<repo>/api@sha256:<digest>
+# "artifacts via OCI referrer" => Kyverno will not see it
+
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  https://ghcr.io/v2/<owner>/<repo>/api/manifests/sha256-<digest>.sig
+# 404 => the legacy tag Kyverno wants does not exist
+```
+
+CI signs with `--registry-referrers-mode=legacy` for this reason. If that flag is
+lost, every preview fails admission while CI stays green — the signature step
+still passes, because signing and verifying both work.
+
 ### Pods are stuck in ImagePullBackOff
 
 Check which tag is actually requested:
