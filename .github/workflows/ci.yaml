@@ -177,7 +177,25 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           provenance: false
 
+      # cosign is pinned to the 2.x line, and that is a compatibility decision
+      # rather than conservatism.
+      #
+      # cosign v3 stores signatures as OCI 1.1 referrers carrying the new
+      # Sigstore bundle (artifactType https://sigstore.dev/cosign/sign/v1).
+      # Kyverno 1.18 cannot read that in either mode: its default lookup wants
+      # the legacy `sha256-<digest>.sig` tag, and its `cosignOCI11` option
+      # expects cosign v2's older referrer artifact type. Both were tried
+      # against real images and both reported "no signatures found" for a
+      # signature that `cosign verify` accepts.
+      #
+      # v2.6.5 writes the legacy tag, which is what the admission policy reads.
+      # Revisit when Kyverno understands the v3 bundle format.
       - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v2.6.5
+
+      - name: Record the cosign version actually in use
+        run: cosign version --json | python3 -c "import sys,json;print('cosign', json.load(sys.stdin)['gitVersion'])"
 
       # Everything below addresses the digest, never a tag. A tag is a mutable
       # pointer: signing one says "whatever this name resolves to right now is
@@ -188,8 +206,14 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
+
+          # No flag controls the storage layout: --registry-referrers-mode only
+          # affects *fetching*, despite reading like a write option. Which
+          # layout gets written is a property of the cosign major version, which
+          # is why it is pinned above.
           cosign sign --yes "${IMAGE}@${DIGEST}"
-          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
+          cosign attest --yes --type spdxjson \
+            --predicate sbom.spdx.json "${IMAGE}@${DIGEST}"
           echo "Signed ${IMAGE}@${DIGEST}"
 
       # A signing step that silently produced nothing verifiable would be worse

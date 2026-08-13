@@ -157,6 +157,69 @@ Note that these policies do nothing on a CNI that does not enforce NetworkPolicy
 apply cleanly either way, so confirm enforcement rather than assuming it — k3s enforces
 by default.
 
+### A preview Application is permanently OutOfSync on its Deployments
+
+```
+OutOfSync: Deployment preview-pr-<N>-preview-app-api
+OutOfSync: Deployment preview-pr-<N>-preview-app-worker
+health: Healthy
+```
+
+Healthy and OutOfSync together, forever, on a diff no sync closes — the live
+Deployment image carries an `@sha256:...` the rendered chart does not.
+
+Kyverno wrote it. A rule matching `Pod` is auto-expanded to every pod controller
+unless told otherwise, and the generated rule applies `mutateDigest` to the
+Deployment. Check for the generated rules:
+
+```bash
+kubectl get clusterpolicy verify-preview-images \
+  -o jsonpath='{.status.autogen.rules[*].name}{"\n"}'
+```
+
+`autogen-...` entries mean autogen is on. The policy sets
+`pod-policies.kyverno.io/autogen-controllers: none` to prevent this; if that
+annotation is lost, every preview goes OutOfSync while looking healthy.
+
+With autogen off, an unsigned image no longer fails at `kubectl apply` of the
+Deployment — the Deployment applies and creates zero pods. Look at the
+ReplicaSet, not the Deployment:
+
+```bash
+kubectl -n preview-pr-<N> get rs -o jsonpath='{.items[0].status.conditions[0].message}'
+```
+
+### Kyverno rejects an image CI just signed
+
+```
+resource Pod/preview-pr-<N>/... was blocked due to the following policies
+verify-preview-images:
+  require-cosign-signature: 'failed to verify image ...: no signatures found'
+```
+
+The confusing part is that `cosign verify` on the same digest succeeds from a
+laptop. Both are right — they are looking in different places.
+
+cosign v3 defaults to writing signatures as OCI 1.1 referrers. Kyverno reads the
+legacy `sha256-<digest>.sig` tag unless `cosignOCI11` is set, and that flag is
+experimental. The result is a signature that is real, verifiable and invisible to
+the thing enforcing it.
+
+Check where the signature actually landed:
+
+```bash
+cosign tree ghcr.io/<owner>/<repo>/api@sha256:<digest>
+# "artifacts via OCI referrer" => Kyverno will not see it
+
+curl -sI -H "Authorization: Bearer $TOKEN" \
+  https://ghcr.io/v2/<owner>/<repo>/api/manifests/sha256-<digest>.sig
+# 404 => the legacy tag Kyverno wants does not exist
+```
+
+CI signs with `--registry-referrers-mode=legacy` for this reason. If that flag is
+lost, every preview fails admission while CI stays green — the signature step
+still passes, because signing and verifying both work.
+
 ### Pods are stuck in ImagePullBackOff
 
 Check which tag is actually requested:
